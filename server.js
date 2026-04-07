@@ -98,9 +98,26 @@ app.post('/prove', async (req, res) => {
 
     console.log(`Generating ZK proof for ${username}...`);
     const proof = await MinalianVerification.verify(publicInput, serverAttestation);
-    console.log('ZK proof generated.');
+    console.log('ZK proof generated, type:', typeof proof, 'constructor:', proof?.constructor?.name);
+    console.log('has toJSON:', typeof proof?.toJSON);
 
-    res.json({ ok: true, zkProof: proof.toJSON(), zkPublicInput: { walletAddress, username, dayTimestamp: ts } });
+    // Serialize proof safely
+    let proofJson;
+    if (proof && typeof proof.toJSON === 'function') {
+      proofJson = proof.toJSON();
+    } else if (proof && proof.proof) {
+      // Fallback: manually extract fields
+      proofJson = {
+        publicInput: proof.publicInput,
+        publicOutput: proof.publicOutput,
+        maxProofsVerified: proof.maxProofsVerified,
+        proof: proof.proof,
+      };
+    } else {
+      throw new Error('Could not serialize proof: ' + JSON.stringify(Object.keys(proof || {})));
+    }
+
+    res.json({ ok: true, zkProof: proofJson, zkPublicInput: { walletAddress, username, dayTimestamp: ts } });
 
   } catch (err) {
     console.error('Prove error:', err.message);
