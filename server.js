@@ -84,9 +84,16 @@ app.post('/prove', async (req, res) => {
 
     console.log('sigObj keys:', Object.keys(sigObj));
 
+    // Auro wallet returns {field, scalar} but o1js Signature.fromJSON expects {r, s}
+    const sigForO1js = {
+      r: sigObj.field  ?? sigObj.r,
+      s: sigObj.scalar ?? sigObj.s,
+    };
+    console.log('sigForO1js:', sigForO1js);
+
     const ts         = dayTimestamp ?? Math.floor(Date.now() / 86400000);
     const publicKey  = PublicKey.fromBase58(walletAddress);
-    const signature  = Signature.fromJSON(sigObj);
+    const signature  = Signature.fromJSON(sigForO1js);
 
     const usernameHash   = Poseidon.hash(
       [...new TextEncoder().encode(username)].map(b => Field(b))
