@@ -5,17 +5,12 @@ import { ZkProgram, PublicKey, Signature, Field, Poseidon, Struct } from 'o1js';
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-// Allow requests from play.minaliens.xyz (and localhost for testing)
 app.use(cors({
-  origin: [
-    'https://play.minaliens.xyz',
-    'http://localhost',
-    'http://127.0.0.1'
-  ]
+  origin: ['https://play.minaliens.xyz', 'http://localhost', 'http://127.0.0.1']
 }));
 app.use(express.json());
 
-// ── ZkProgram — must exactly match the client definition ──
+// ── ZkProgram ──
 class VerificationPublicInput extends Struct({
   walletPublicKey: PublicKey,
   usernameHash:    Field,
@@ -37,7 +32,6 @@ const MinalianVerification = ZkProgram({
   }
 });
 
-// Compile once at startup — takes ~60s, then stays compiled
 let compiled = false;
 let compiling = false;
 let compilePromise = null;
@@ -55,15 +49,12 @@ async function ensureCompiled() {
   return compilePromise;
 }
 
-// Start compiling immediately on boot
 ensureCompiled().catch(err => console.error('Compile error:', err));
 
-// ── Health check ──
 app.get('/health', (req, res) => {
   res.json({ ok: true, compiled, compiling });
 });
 
-// ── Prove endpoint ──
 app.post('/prove', async (req, res) => {
   const { walletAddress, walletSignature, signedMessage, username, dayTimestamp } = req.body;
 
@@ -74,13 +65,28 @@ app.post('/prove', async (req, res) => {
   try {
     await ensureCompiled();
 
-    const walletSignatureJson = typeof walletSignature === 'string'
-      ? walletSignature
-      : JSON.stringify(walletSignature);
+    // walletSignature may arrive as:
+    // 1. A JSON string: '{"field":"...","scalar":"..."}'
+    // 2. A plain object: {field:"...", scalar:"..."}
+    // Signature.fromJSON() needs a plain object {field, scalar}
+    let sigObj;
+    if (typeof walletSignature === 'string') {
+      try {
+        sigObj = JSON.parse(walletSignature);
+      } catch(e) {
+        return res.status(400).json({ error: 'Invalid walletSignature JSON: ' + e.message });
+      }
+    } else if (typeof walletSignature === 'object' && walletSignature !== null) {
+      sigObj = walletSignature;
+    } else {
+      return res.status(400).json({ error: 'walletSignature must be a JSON string or object' });
+    }
+
+    console.log('sigObj keys:', Object.keys(sigObj));
 
     const ts         = dayTimestamp ?? Math.floor(Date.now() / 86400000);
     const publicKey  = PublicKey.fromBase58(walletAddress);
-    const signature  = Signature.fromJSON(JSON.parse(walletSignatureJson));
+    const signature  = Signature.fromJSON(sigObj);
 
     const usernameHash   = Poseidon.hash(
       [...new TextEncoder().encode(username)].map(b => Field(b))
