@@ -1,19 +1,28 @@
 import express from 'express';
 import cors from 'cors';
-import { ZkProgram, PublicKey, Signature, Field, Poseidon, Struct, Encoding } from 'o1js';
+import { ZkProgram, PublicKey, PrivateKey, Signature, Field, Struct } from 'o1js';
+import Client from 'o1js/dist/web/mina-signer/mina-signer.js';
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
+
+// Minalia server signing key — attests verified wallet ownership
+// Public key is hardcoded in the ZkProgram circuit
+const SERVER_PRIVATE_KEY = process.env.SERVER_PRIVATE_KEY || 'EKDxrPaymujx8HjZJ5iWLLQ4nCyyGa5HieoTEwdcX6T1GvPJgvv4';
+const SERVER_PUBLIC_KEY  = 'B62qoq6kq5R4RocoQspdNt948wZEpMWy16EC1HzdWhhuiVpQ8CKxmEr';
+
+const minaClient = new Client({ network: 'mainnet' });
 
 app.use(cors({
   origin: ['https://play.minaliens.xyz', 'http://localhost', 'http://127.0.0.1']
 }));
 app.use(express.json());
 
-// ── ZkProgram — prove valid Mina wallet signature over a dated message ──
+// ── ZkProgram — must match prove.ts exactly ──
 class VerificationPublicInput extends Struct({
   walletPublicKey: PublicKey,
   dayTimestamp:    Field,
+  serverPublicKey: PublicKey,
 }) {}
 
 const MinalianVerification = ZkProgram({
@@ -21,28 +30,29 @@ const MinalianVerification = ZkProgram({
   publicInput: VerificationPublicInput,
   methods: {
     verify: {
-      privateInputs: [Signature, Field, Field],
-      async method(publicInput, walletSignature, msgField0, msgField1) {
-        // Prove: I know a valid signature over these message fields
-        walletSignature.verify(publicInput.walletPublicKey, [msgField0, msgField1]).assertTrue();
+      privateInputs: [Signature],
+      async method(publicInput, serverAttestation) {
+        const msg = [
+          publicInput.walletPublicKey.x,
+          publicInput.walletPublicKey.toGroup().y,
+          publicInput.dayTimestamp,
+        ];
+        serverAttestation.verify(publicInput.serverPublicKey, msg).assertTrue();
       }
     }
   }
 });
 
 let compiled = false;
-let compiling = false;
 let compilePromise = null;
 
 async function ensureCompiled() {
   if (compiled) return;
-  if (compiling) return compilePromise;
-  compiling = true;
-  console.log('Compiling MinalianVerification ZkProgram...');
+  if (compilePromise) return compilePromise;
+  console.log('Compiling ZkProgram...');
   compilePromise = MinalianVerification.compile().then(() => {
     compiled = true;
-    compiling = false;
-    console.log('Compiled successfully.');
+    console.log('Compiled.');
   });
   return compilePromise;
 }
@@ -50,7 +60,7 @@ async function ensureCompiled() {
 ensureCompiled().catch(err => console.error('Compile error:', err));
 
 app.get('/health', (req, res) => {
-  res.json({ ok: true, compiled, compiling });
+  res.json({ ok: true, compiled, serverPubKey: SERVER_PUBLIC_KEY });
 });
 
 app.post('/prove', async (req, res) => {
@@ -61,46 +71,61 @@ app.post('/prove', async (req, res) => {
   }
 
   try {
-    await ensureCompiled();
-
-    // Parse signature — Auro returns {field, scalar}, o1js needs {r, s}
-    const parsed = typeof walletSignature === 'string'
+    // Step 1: Verify the Auro wallet signature using mina-signer (pure JS)
+    const sigObj = typeof walletSignature === 'string'
       ? JSON.parse(walletSignature)
       : walletSignature;
 
-    const sigObj = {
-      r: parsed.field  ?? parsed.r,
-      s: parsed.scalar ?? parsed.s,
+    // mina-signer needs {field, scalar} format
+    const auroSig = {
+      field:  sigObj.field  ?? sigObj.r,
+      scalar: sigObj.scalar ?? sigObj.s,
     };
 
-    const ts        = dayTimestamp ?? Math.floor(Date.now() / 86400000);
-    const publicKey = PublicKey.fromBase58(walletAddress);
-    const signature = Signature.fromJSON(sigObj);
-
-    // Convert the signed message string to fields — same as Auro does internally
-    const msgFields = Encoding.stringToFields(signedMessage);
-    console.log(`Message: "${signedMessage}"`);
-    console.log(`msgFields count: ${msgFields.length}`);
-
-    if (msgFields.length < 2) {
-      return res.status(400).json({ error: `Need at least 2 message fields, got ${msgFields.length}` });
-    }
-
-    const publicInput = new VerificationPublicInput({
-      walletPublicKey: publicKey,
-      dayTimestamp:    Field(ts),
+    const sigValid = minaClient.verifyMessage({
+      data:      signedMessage,
+      publicKey: walletAddress,
+      signature: auroSig,
     });
 
-    console.log(`Generating proof for ${username} (${walletAddress.slice(0,16)}...)...`);
-    const proof = await MinalianVerification.verify(
-      publicInput, signature, msgFields[0], msgFields[1]
-    );
-    console.log('Proof generated successfully.');
+    if (!sigValid) {
+      return res.status(401).json({ error: 'Invalid wallet signature — ownership proof failed' });
+    }
+
+    console.log(`Wallet ownership verified for ${username} (${walletAddress.slice(0,16)}...)`);
+
+    // Step 2: Server creates an o1js attestation signature
+    const ts           = dayTimestamp ?? Math.floor(Date.now() / 86400000);
+    const walletPubKey = PublicKey.fromBase58(walletAddress);
+    const serverPrivKey= PrivateKey.fromBase58(SERVER_PRIVATE_KEY);
+
+    const attestMsg = [
+      walletPubKey.x,
+      walletPubKey.toGroup().y,
+      Field(ts),
+    ];
+
+    const serverAttestation = Signature.create(serverPrivKey, attestMsg);
+    console.log('Server attestation created.');
+
+    // Step 3: Generate ZK proof
+    await ensureCompiled();
+
+    const serverPubKey = PublicKey.fromBase58(SERVER_PUBLIC_KEY);
+    const publicInput  = new VerificationPublicInput({
+      walletPublicKey: walletPubKey,
+      dayTimestamp:    Field(ts),
+      serverPublicKey: serverPubKey,
+    });
+
+    console.log(`Generating ZK proof for ${username}...`);
+    const proof = await MinalianVerification.verify(publicInput, serverAttestation);
+    console.log('ZK proof generated.');
 
     res.json({
-      ok: true,
-      zkProof: proof.toJSON(),
-      zkPublicInput: { walletAddress, username, dayTimestamp: ts }
+      ok:             true,
+      zkProof:        proof.toJSON(),
+      zkPublicInput:  { walletAddress, username, dayTimestamp: ts },
     });
 
   } catch (err) {
@@ -110,5 +135,5 @@ app.post('/prove', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Minalia proving server running on port ${PORT}`);
+  console.log(`Minalia proving server on port ${PORT}`);
 });
