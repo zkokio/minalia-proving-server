@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import { ZkProgram, PublicKey, Signature, Field, Poseidon, Struct } from 'o1js';
+import { ZkProgram, PublicKey, Signature, Field, Poseidon, Struct, Encoding } from 'o1js';
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -10,11 +10,10 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// ── ZkProgram ──
+// ── ZkProgram — prove valid Mina wallet signature over a dated message ──
 class VerificationPublicInput extends Struct({
   walletPublicKey: PublicKey,
-  usernameHash:    Field,
-  timestampField:  Field,
+  dayTimestamp:    Field,
 }) {}
 
 const MinalianVerification = ZkProgram({
@@ -22,11 +21,10 @@ const MinalianVerification = ZkProgram({
   publicInput: VerificationPublicInput,
   methods: {
     verify: {
-      privateInputs: [Signature, Field],
-      async method(publicInput, walletSignature, messageHash) {
-        walletSignature.verify(publicInput.walletPublicKey, [messageHash]).assertTrue();
-        const expectedHash = Poseidon.hash([publicInput.usernameHash, publicInput.timestampField]);
-        messageHash.assertEquals(expectedHash);
+      privateInputs: [Signature, Field, Field],
+      async method(publicInput, walletSignature, msgField0, msgField1) {
+        // Prove: I know a valid signature over these message fields
+        walletSignature.verify(publicInput.walletPublicKey, [msgField0, msgField1]).assertTrue();
       }
     }
   }
@@ -58,60 +56,52 @@ app.get('/health', (req, res) => {
 app.post('/prove', async (req, res) => {
   const { walletAddress, walletSignature, signedMessage, username, dayTimestamp } = req.body;
 
-  if (!walletAddress || !walletSignature || !username) {
+  if (!walletAddress || !walletSignature || !signedMessage || !username) {
     return res.status(400).json({ error: 'Missing required fields' });
   }
 
   try {
     await ensureCompiled();
 
-    // walletSignature may arrive as:
-    // 1. A JSON string: '{"field":"...","scalar":"..."}'
-    // 2. A plain object: {field:"...", scalar:"..."}
-    // Signature.fromJSON() needs a plain object {field, scalar}
-    let sigObj;
-    if (typeof walletSignature === 'string') {
-      try {
-        sigObj = JSON.parse(walletSignature);
-      } catch(e) {
-        return res.status(400).json({ error: 'Invalid walletSignature JSON: ' + e.message });
-      }
-    } else if (typeof walletSignature === 'object' && walletSignature !== null) {
-      sigObj = walletSignature;
-    } else {
-      return res.status(400).json({ error: 'walletSignature must be a JSON string or object' });
-    }
+    // Parse signature — Auro returns {field, scalar}, o1js needs {r, s}
+    const parsed = typeof walletSignature === 'string'
+      ? JSON.parse(walletSignature)
+      : walletSignature;
 
-    console.log('sigObj keys:', Object.keys(sigObj));
-
-    // Auro wallet returns {field, scalar} but o1js Signature.fromJSON expects {r, s}
-    const sigForO1js = {
-      r: sigObj.field  ?? sigObj.r,
-      s: sigObj.scalar ?? sigObj.s,
+    const sigObj = {
+      r: parsed.field  ?? parsed.r,
+      s: parsed.scalar ?? parsed.s,
     };
-    console.log('sigForO1js:', sigForO1js);
 
-    const ts         = dayTimestamp ?? Math.floor(Date.now() / 86400000);
-    const publicKey  = PublicKey.fromBase58(walletAddress);
-    const signature  = Signature.fromJSON(sigForO1js);
+    const ts        = dayTimestamp ?? Math.floor(Date.now() / 86400000);
+    const publicKey = PublicKey.fromBase58(walletAddress);
+    const signature = Signature.fromJSON(sigObj);
 
-    const usernameHash   = Poseidon.hash(
-      [...new TextEncoder().encode(username)].map(b => Field(b))
-    );
-    const timestampField = Field(ts);
-    const messageHash    = Poseidon.hash([usernameHash, timestampField]);
+    // Convert the signed message string to fields — same as Auro does internally
+    const msgFields = Encoding.stringToFields(signedMessage);
+    console.log(`Message: "${signedMessage}"`);
+    console.log(`msgFields count: ${msgFields.length}`);
+
+    if (msgFields.length < 2) {
+      return res.status(400).json({ error: `Need at least 2 message fields, got ${msgFields.length}` });
+    }
 
     const publicInput = new VerificationPublicInput({
       walletPublicKey: publicKey,
-      usernameHash,
-      timestampField,
+      dayTimestamp:    Field(ts),
     });
 
     console.log(`Generating proof for ${username} (${walletAddress.slice(0,16)}...)...`);
-    const proof = await MinalianVerification.verify(publicInput, signature, messageHash);
-    console.log('Proof generated.');
+    const proof = await MinalianVerification.verify(
+      publicInput, signature, msgFields[0], msgFields[1]
+    );
+    console.log('Proof generated successfully.');
 
-    res.json({ ok: true, zkProof: proof.toJSON(), zkPublicInput: { walletAddress, username, dayTimestamp: ts } });
+    res.json({
+      ok: true,
+      zkProof: proof.toJSON(),
+      zkPublicInput: { walletAddress, username, dayTimestamp: ts }
+    });
 
   } catch (err) {
     console.error('Prove error:', err.message);
