@@ -1,4 +1,5 @@
 import express from 'express';
+import { createHash } from 'crypto';
 import cors from 'cors';
 import { ZkProgram, PublicKey, PrivateKey, Signature, Field, Struct } from 'o1js';
 import Client from 'mina-signer';
@@ -98,15 +99,13 @@ app.post('/prove', async (req, res) => {
 
     console.log(`Generating ZK proof for ${username}...`);
     const proof = await MinalianVerification.verify(publicInput, serverAttestation);
-    console.log('ZK proof generated, type:', typeof proof, 'constructor:', proof?.constructor?.name);
-    console.log('has toJSON:', typeof proof?.toJSON);
+    console.log('ZK proof generated.');
 
     // Serialize proof safely
     let proofJson;
     if (proof && typeof proof.toJSON === 'function') {
       proofJson = proof.toJSON();
     } else if (proof && proof.proof) {
-      // Fallback: manually extract fields
       proofJson = {
         publicInput: proof.publicInput,
         publicOutput: proof.publicOutput,
@@ -117,7 +116,36 @@ app.post('/prove', async (req, res) => {
       throw new Error('Could not serialize proof: ' + JSON.stringify(Object.keys(proof || {})));
     }
 
-    res.json({ ok: true, zkProof: proofJson, zkPublicInput: { walletAddress, username, dayTimestamp: ts } });
+    // Record proof hash on-chain (non-blocking — don't fail if this errors)
+    let onChainTx = null;
+    const ZKAPP_ADDRESS   = process.env.ZKAPP_ADDRESS;
+    const MINA_NETWORK    = process.env.MINA_NETWORK || 'devnet';
+    if (ZKAPP_ADDRESS) {
+      try {
+        const { recordVerificationOnChain } = await import('./record.mjs');
+        const result = await recordVerificationOnChain({
+          walletAddress,
+          proofHash: createHash('sha256')
+            .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
+            .digest('hex'),
+          dayTimestamp: ts,
+          serverPrivateKey: SERVER_PRIVATE_KEY,
+          zkAppAddress: ZKAPP_ADDRESS,
+          network: MINA_NETWORK,
+        });
+        onChainTx = result;
+        console.log('On-chain tx:', result.txHash);
+      } catch (onChainErr) {
+        console.error('On-chain recording failed (non-fatal):', onChainErr.message);
+      }
+    }
+
+    res.json({
+      ok: true,
+      zkProof: proofJson,
+      zkPublicInput: { walletAddress, username, dayTimestamp: ts },
+      onChainTx,
+    });
 
   } catch (err) {
     console.error('Prove error:', err.message);
