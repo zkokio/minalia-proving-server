@@ -64,14 +64,14 @@ app.get('/deploy-zkapp', async (req, res) => {
   }
 
   try {
-    const { Mina, PrivateKey: MPriv, AccountUpdate, fetchAccount } = await import('o1js');
-    const { SmartContract, state, State, method, Field: MField, PublicKey: MPubKey, Struct: MStruct } = await import('o1js');
+    const o1js = await import('o1js');
+    const { Mina, PrivateKey, AccountUpdate, fetchAccount, SmartContract, state, State, Field, Struct, method, PublicKey } = o1js;
 
     const DEVNET  = 'https://api.minascan.io/node/devnet/v1/graphql';
     const ARCHIVE = 'https://api.minascan.io/archive/devnet/v1/graphql';
     Mina.setActiveInstance(Mina.Network({ mina: DEVNET, archive: ARCHIVE }));
 
-    const deployerKey = MPriv.fromBase58(SERVER_PRIVATE_KEY);
+    const deployerKey = PrivateKey.fromBase58(SERVER_PRIVATE_KEY);
     const deployerPub = deployerKey.toPublicKey();
 
     console.log('Fetching deployer account...');
@@ -82,49 +82,31 @@ app.get('/deploy-zkapp', async (req, res) => {
     console.log('Balance:', balance, 'MINA');
     if (balance < 1) throw new Error('Need at least 1 MINA, have ' + balance);
 
-    class VerEvent extends MStruct({
-      walletX: MField, walletY: MField,
-      proofHashLow: MField, proofHashHigh: MField, dayTimestamp: MField,
-    }) {}
-
+    // Minimal zkApp — just state storage, no methods needed for deploy
     class MinaliaVerifierApp extends SmartContract {
-      events = { verification: VerEvent };
       init() {
         super.init();
-        this.totalVerifications.set(MField(0));
-        this.lastWalletX.set(MField(0));
-        this.lastProofHashLow.set(MField(0));
-        this.lastProofHashHigh.set(MField(0));
-        this.lastDayTimestamp.set(MField(0));
+        this.totalVerifications.set(Field(0));
+        this.lastWalletX.set(Field(0));
+        this.lastProofHashLow.set(Field(0));
+        this.lastProofHashHigh.set(Field(0));
+        this.lastDayTimestamp.set(Field(0));
       }
     }
 
-    // Apply state decorators
-    const stateD = state(MField);
-    ['totalVerifications','lastWalletX','lastProofHashLow','lastProofHashHigh','lastDayTimestamp'].forEach(k => {
-      Object.defineProperty(MinaliaVerifierApp.prototype, k, { value: new State(), writable: true, configurable: true });
+    // Apply state decorators programmatically
+    const stateD = state(Field);
+    for (const k of ['totalVerifications','lastWalletX','lastProofHashLow','lastProofHashHigh','lastDayTimestamp']) {
+      Object.defineProperty(MinaliaVerifierApp.prototype, k, {
+        value: new State(), writable: true, configurable: true, enumerable: true
+      });
       stateD(MinaliaVerifierApp.prototype, k);
-    });
+    }
 
-    // Apply method decorator
-    MinaliaVerifierApp.prototype.recordVerification = async function(
-      walletPublicKey, proofHashLow, proofHashHigh, dayTimestamp
-    ) {
-      this.totalVerifications.set(this.totalVerifications.getAndRequireEquals().add(MField(1)));
-      this.lastWalletX.set(walletPublicKey.x);
-      this.lastProofHashLow.set(proofHashLow);
-      this.lastProofHashHigh.set(proofHashHigh);
-      this.lastDayTimestamp.set(dayTimestamp);
-      this.emitEvent('verification', new VerEvent({
-        walletX: walletPublicKey.x, walletY: walletPublicKey.toGroup().y,
-        proofHashLow, proofHashHigh, dayTimestamp,
-      }));
-    };
-    method(MinaliaVerifierApp.prototype, 'recordVerification',
-      Object.getOwnPropertyDescriptor(MinaliaVerifierApp.prototype, 'recordVerification'));
-
-    const zkKey = MPriv.random();
+    const zkKey = PrivateKey.random();
     const zkPub = zkKey.toPublicKey();
+    console.log('zkApp address will be:', zkPub.toBase58());
+
     console.log('Compiling zkApp...');
     await MinaliaVerifierApp.compile();
     console.log('Compiled. Deploying...');
@@ -141,11 +123,11 @@ app.get('/deploy-zkapp', async (req, res) => {
     console.log('Deployed! tx:', sent.hash);
     res.json({
       ok: true,
-      txHash: sent.hash,
+      txHash:          sent.hash,
       zkAppAddress:    zkPub.toBase58(),
       zkAppPrivateKey: zkKey.toBase58(),
       explorerUrl:     'https://minascan.io/devnet/tx/' + sent.hash,
-      instructions:    'Add ZKAPP_ADDRESS and MINA_NETWORK=devnet to Railway env vars',
+      nextSteps:       'Add ZKAPP_ADDRESS=' + zkPub.toBase58() + ' and MINA_NETWORK=devnet to Railway env vars',
     });
   } catch(err) {
     console.error('Deploy error:', err.message);
