@@ -41,8 +41,11 @@ let compilePromise = null;
 async function ensureCompiled() {
   if (compiled) return;
   if (compilePromise) return compilePromise;
-  console.log('Compiling ZkProgram...');
-  compilePromise = MinalianVerification.compile().then(() => { compiled = true; console.log('Compiled.'); });
+  console.log('Compiling ZkProgram + MinaliaVerifier...');
+  compilePromise = Promise.all([
+    MinalianVerification.compile(),
+    import('./MinaliaVerifier.js').then(m => m.MinaliaVerifier.compile()),
+  ]).then(() => { compiled = true; console.log('Both compiled.'); });
   return compilePromise;
 }
 ensureCompiled().catch(err => console.error('Compile error:', err));
