@@ -12,7 +12,7 @@ const SERVER_PUBLIC_KEY  = 'B62qoq6kq5R4RocoQspdNt948wZEpMWy16EC1HzdWhhuiVpQ8CKx
 
 const minaClient = new Client({ network: 'mainnet' });
 
-app.use(cors({ origin: ['https://play.minaliens.xyz', 'http://localhost', 'http://127.0.0.1'] }));
+app.use(cors({ origin: ['https://play.minaliens.xyz', 'http://localhost', 'http://127.0.0.1'], credentials: false }));
 app.use(express.json());
 
 // ── ZkProgram for verification proofs ──
