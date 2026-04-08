@@ -63,7 +63,7 @@ app.get('/deploy-zkapp', async (req, res) => {
   }
 
   try {
-    const { Mina, PrivateKey: MPriv, AccountUpdate, fetchAccount } = await import('o1js');
+    const { Mina, PrivateKey: MPriv, AccountUpdate, Permissions, fetchAccount } = await import('o1js');
 
     const DEVNET  = 'https://api.minascan.io/node/devnet/v1/graphql';
     const ARCHIVE = 'https://api.minascan.io/archive/devnet/v1/graphql';
@@ -99,7 +99,7 @@ app.get('/deploy-zkapp', async (req, res) => {
         const zkUpdate = AccountUpdate.create(zkPub);
         zkUpdate.account.verificationKey.set(verificationKey);
         zkUpdate.account.permissions.set({
-          ...AccountUpdate.defaultPermissions(),
+          ...Permissions.default(),
         });
         zkUpdate.requireSignature();
       }
