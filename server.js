@@ -44,7 +44,7 @@ async function ensureCompiled() {
   console.log('Compiling ZkProgram + MinaliaVerifier...');
   compilePromise = Promise.all([
     MinalianVerification.compile(),
-    import('./MinaliaVerifier.js').then(m => m.MinaliaVerifier.compile()),
+    import('./MinaliaVerifier.cjs').then(m => m.MinaliaVerifier.compile()),
   ]).then(() => { compiled = true; console.log('Both compiled.'); });
   return compilePromise;
 }
@@ -170,7 +170,7 @@ app.post('/prove', async (req, res) => {
     let onChainTx = null;
     if (process.env.ZKAPP_ADDRESS) {
       try {
-        const { recordVerificationOnChain } = await import('./MinaliaVerifier.js');
+        const { recordVerificationOnChain } = await import('./MinaliaVerifier.cjs');
         const proofHash = createHash('sha256')
           .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
           .digest('hex');
