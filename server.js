@@ -168,25 +168,50 @@ app.post('/prove', async (req, res) => {
       proofJson = { publicInput: proof.publicInput, publicOutput: proof.publicOutput, maxProofsVerified: proof.maxProofsVerified, proof: proof.proof };
     }
 
-    // Record on-chain if zkApp is deployed
-    let onChainTx = null;
-    if (process.env.ZKAPP_ADDRESS) {
-      try {
-        const { recordVerificationOnChain } = await import('./MinaliaVerifier.cjs');
-        const proofHash = createHash('sha256')
-          .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
-          .digest('hex');
-        onChainTx = await recordVerificationOnChain({
-          walletAddress, proofHash, dayTimestamp: ts,
-          serverPrivateKey: SERVER_PRIVATE_KEY,
-          zkAppAddress: process.env.ZKAPP_ADDRESS,
-          network: process.env.MINA_NETWORK || 'devnet',
-        });
-        console.log('On-chain tx:', onChainTx.txHash);
-      } catch(e) { console.error('On-chain failed (non-fatal):', e.message); }
-    }
+    // Respond immediately with proof — on-chain recording happens in background
+    res.json({ ok: true, zkProof: proofJson, zkPublicInput: { walletAddress, username, dayTimestamp: ts }, onChainTx: null });
 
-    res.json({ ok: true, zkProof: proofJson, zkPublicInput: { walletAddress, username, dayTimestamp: ts }, onChainTx });
+    // Fire-and-forget on-chain recording (after response is sent)
+    if (process.env.ZKAPP_ADDRESS) {
+      const proofHash = createHash('sha256')
+        .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
+        .digest('hex');
+      const zkAppAddress  = process.env.ZKAPP_ADDRESS;
+      const minaNetwork   = process.env.MINA_NETWORK || 'devnet';
+      const serverKey     = SERVER_PRIVATE_KEY;
+      const walletAddr    = walletAddress;
+      const day           = ts;
+
+      setImmediate(async () => {
+        try {
+          const { recordVerificationOnChain } = await import('./MinaliaVerifier.cjs');
+          const result = await recordVerificationOnChain({
+            walletAddress: walletAddr, proofHash, dayTimestamp: day,
+            serverPrivateKey: serverKey,
+            zkAppAddress, network: minaNetwork,
+          });
+          console.log('On-chain tx recorded:', result.txHash);
+
+          // Update DB with tx hash via Supabase REST
+          const SUPABASE_URL = process.env.SUPABASE_URL;
+          const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
+          if (SUPABASE_URL && SUPABASE_KEY) {
+            await fetch(SUPABASE_URL + '/rest/v1/users?mina_wallet_address=eq.' + walletAddr, {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': SUPABASE_KEY,
+                'Authorization': 'Bearer ' + SUPABASE_KEY,
+              },
+              body: JSON.stringify({ zk_onchain_tx: result.txHash }),
+            });
+            console.log('DB updated with tx hash.');
+          }
+        } catch(e) {
+          console.error('Background on-chain recording failed:', e.message);
+        }
+      });
+    }
   } catch (err) {
     console.error('Prove error:', err.message);
     res.status(500).json({ error: err.message });
