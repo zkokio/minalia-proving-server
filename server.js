@@ -1,8 +1,8 @@
 import express from 'express';
-import { createHash } from 'crypto';
 import cors from 'cors';
 import { ZkProgram, PublicKey, PrivateKey, Signature, Field, Struct } from 'o1js';
 import Client from 'mina-signer';
+import { createHash } from 'crypto';
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -29,11 +29,7 @@ const MinalianVerification = ZkProgram({
     verify: {
       privateInputs: [Signature],
       async method(publicInput, serverAttestation) {
-        const msg = [
-          publicInput.walletPublicKey.x,
-          publicInput.walletPublicKey.toGroup().y,
-          publicInput.dayTimestamp,
-        ];
+        const msg = [publicInput.walletPublicKey.x, publicInput.walletPublicKey.toGroup().y, publicInput.dayTimestamp];
         serverAttestation.verify(publicInput.serverPublicKey, msg).assertTrue();
       }
     }
@@ -47,48 +43,135 @@ async function ensureCompiled() {
   if (compiled) return;
   if (compilePromise) return compilePromise;
   console.log('Compiling ZkProgram...');
-  compilePromise = MinalianVerification.compile().then(() => {
-    compiled = true;
-    console.log('Compiled successfully.');
-  });
+  compilePromise = MinalianVerification.compile().then(() => { compiled = true; console.log('Compiled.'); });
   return compilePromise;
 }
 
 ensureCompiled().catch(err => console.error('Compile error:', err));
 
+// ── Health ──
 app.get('/health', (req, res) => {
-  res.json({ ok: true, compiled, serverPubKey: SERVER_PUBLIC_KEY });
+  res.json({ ok: true, compiled, serverPubKey: SERVER_PUBLIC_KEY, zkAppAddress: process.env.ZKAPP_ADDRESS || null });
 });
 
-app.post('/prove', async (req, res) => {
-  const { walletAddress, walletSignature, signedMessage, username, dayTimestamp } = req.body;
-
-  if (!walletAddress || !walletSignature || !signedMessage || !username) {
-    return res.status(400).json({ error: 'Missing required fields' });
+// ── One-time zkApp deploy — GET /deploy-zkapp?secret=XXX ──
+app.get('/deploy-zkapp', async (req, res) => {
+  if (req.query.secret !== process.env.DEPLOY_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (process.env.ZKAPP_ADDRESS) {
+    return res.json({ ok: true, message: 'Already deployed', zkAppAddress: process.env.ZKAPP_ADDRESS });
   }
 
   try {
-    // Step 1: Verify Auro signature with mina-signer
-    const sigObj = typeof walletSignature === 'string' ? JSON.parse(walletSignature) : walletSignature;
-    const auroSig = { field: sigObj.field ?? sigObj.r, scalar: sigObj.scalar ?? sigObj.s };
+    const { Mina, PrivateKey: MPriv, AccountUpdate, fetchAccount } = await import('o1js');
+    const { SmartContract, state, State, method, Field: MField, PublicKey: MPubKey, Struct: MStruct } = await import('o1js');
 
-    const sigValid = minaClient.verifyMessage({
-      data: signedMessage, publicKey: walletAddress, signature: auroSig,
+    const DEVNET  = 'https://api.minascan.io/node/devnet/v1/graphql';
+    const ARCHIVE = 'https://api.minascan.io/archive/devnet/v1/graphql';
+    Mina.setActiveInstance(Mina.Network({ mina: DEVNET, archive: ARCHIVE }));
+
+    const deployerKey = MPriv.fromBase58(SERVER_PRIVATE_KEY);
+    const deployerPub = deployerKey.toPublicKey();
+
+    console.log('Fetching deployer account...');
+    const r = await fetchAccount({ publicKey: deployerPub });
+    if (!r.account) throw new Error('Deployer account not found on devnet — check faucet');
+
+    const balance = Number(r.account.balance.toBigInt()) / 1e9;
+    console.log('Balance:', balance, 'MINA');
+    if (balance < 1) throw new Error('Need at least 1 MINA, have ' + balance);
+
+    class VerEvent extends MStruct({
+      walletX: MField, walletY: MField,
+      proofHashLow: MField, proofHashHigh: MField, dayTimestamp: MField,
+    }) {}
+
+    class MinaliaVerifierApp extends SmartContract {
+      events = { verification: VerEvent };
+      init() {
+        super.init();
+        this.totalVerifications.set(MField(0));
+        this.lastWalletX.set(MField(0));
+        this.lastProofHashLow.set(MField(0));
+        this.lastProofHashHigh.set(MField(0));
+        this.lastDayTimestamp.set(MField(0));
+      }
+    }
+
+    // Apply state decorators
+    const stateD = state(MField);
+    ['totalVerifications','lastWalletX','lastProofHashLow','lastProofHashHigh','lastDayTimestamp'].forEach(k => {
+      Object.defineProperty(MinaliaVerifierApp.prototype, k, { value: new State(), writable: true, configurable: true });
+      stateD(MinaliaVerifierApp.prototype, k);
     });
 
-    if (!sigValid) {
-      return res.status(401).json({ error: 'Invalid wallet signature' });
-    }
-    console.log(`Wallet verified: ${username} (${walletAddress.slice(0,16)}...)`);
+    // Apply method decorator
+    MinaliaVerifierApp.prototype.recordVerification = async function(
+      walletPublicKey, proofHashLow, proofHashHigh, dayTimestamp
+    ) {
+      this.totalVerifications.set(this.totalVerifications.getAndRequireEquals().add(MField(1)));
+      this.lastWalletX.set(walletPublicKey.x);
+      this.lastProofHashLow.set(proofHashLow);
+      this.lastProofHashHigh.set(proofHashHigh);
+      this.lastDayTimestamp.set(dayTimestamp);
+      this.emitEvent('verification', new VerEvent({
+        walletX: walletPublicKey.x, walletY: walletPublicKey.toGroup().y,
+        proofHashLow, proofHashHigh, dayTimestamp,
+      }));
+    };
+    method(MinaliaVerifierApp.prototype, 'recordVerification',
+      Object.getOwnPropertyDescriptor(MinaliaVerifierApp.prototype, 'recordVerification'));
 
-    // Step 2: Server creates o1js attestation
+    const zkKey = MPriv.random();
+    const zkPub = zkKey.toPublicKey();
+    console.log('Compiling zkApp...');
+    await MinaliaVerifierApp.compile();
+    console.log('Compiled. Deploying...');
+
+    const zkApp = new MinaliaVerifierApp(zkPub);
+    const tx = await Mina.transaction({ sender: deployerPub, fee: 100_000_000 }, async () => {
+      AccountUpdate.fundNewAccount(deployerPub);
+      await zkApp.deploy();
+    });
+    await tx.prove();
+    tx.sign([deployerKey, zkKey]);
+    const sent = await tx.send();
+
+    console.log('Deployed! tx:', sent.hash);
+    res.json({
+      ok: true,
+      txHash: sent.hash,
+      zkAppAddress:    zkPub.toBase58(),
+      zkAppPrivateKey: zkKey.toBase58(),
+      explorerUrl:     'https://minascan.io/devnet/tx/' + sent.hash,
+      instructions:    'Add ZKAPP_ADDRESS and MINA_NETWORK=devnet to Railway env vars',
+    });
+  } catch(err) {
+    console.error('Deploy error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Prove ──
+app.post('/prove', async (req, res) => {
+  const { walletAddress, walletSignature, signedMessage, username, dayTimestamp } = req.body;
+  if (!walletAddress || !walletSignature || !signedMessage || !username) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  try {
+    const sigObj = typeof walletSignature === 'string' ? JSON.parse(walletSignature) : walletSignature;
+    const auroSig = { field: sigObj.field ?? sigObj.r, scalar: sigObj.scalar ?? sigObj.s };
+    const sigValid = minaClient.verifyMessage({ data: signedMessage, publicKey: walletAddress, signature: auroSig });
+    if (!sigValid) return res.status(401).json({ error: 'Invalid wallet signature' });
+
+    console.log(`Wallet verified: ${username}`);
     const ts           = dayTimestamp ?? Math.floor(Date.now() / 86400000);
     const walletPubKey = PublicKey.fromBase58(walletAddress);
     const serverPrivKey= PrivateKey.fromBase58(SERVER_PRIVATE_KEY);
     const attestMsg    = [walletPubKey.x, walletPubKey.toGroup().y, Field(ts)];
     const serverAttestation = Signature.create(serverPrivKey, attestMsg);
 
-    // Step 3: Generate ZK proof
     await ensureCompiled();
 
     const publicInput = new VerificationPublicInput({
@@ -101,51 +184,29 @@ app.post('/prove', async (req, res) => {
     const proof = await MinalianVerification.verify(publicInput, serverAttestation);
     console.log('ZK proof generated.');
 
-    // Serialize proof safely
     let proofJson;
     if (proof && typeof proof.toJSON === 'function') {
       proofJson = proof.toJSON();
-    } else if (proof && proof.proof) {
-      proofJson = {
-        publicInput: proof.publicInput,
-        publicOutput: proof.publicOutput,
-        maxProofsVerified: proof.maxProofsVerified,
-        proof: proof.proof,
-      };
     } else {
-      throw new Error('Could not serialize proof: ' + JSON.stringify(Object.keys(proof || {})));
+      proofJson = { publicInput: proof.publicInput, publicOutput: proof.publicOutput, maxProofsVerified: proof.maxProofsVerified, proof: proof.proof };
     }
 
-    // Record proof hash on-chain (non-blocking — don't fail if this errors)
+    // Record on-chain if configured
     let onChainTx = null;
-    const ZKAPP_ADDRESS   = process.env.ZKAPP_ADDRESS;
-    const MINA_NETWORK    = process.env.MINA_NETWORK || 'devnet';
+    const ZKAPP_ADDRESS = process.env.ZKAPP_ADDRESS;
+    const MINA_NETWORK  = process.env.MINA_NETWORK || 'devnet';
     if (ZKAPP_ADDRESS) {
       try {
-        const { recordVerificationOnChain } = await import('./record.mjs');
-        const result = await recordVerificationOnChain({
-          walletAddress,
-          proofHash: createHash('sha256')
-            .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
-            .digest('hex'),
-          dayTimestamp: ts,
-          serverPrivateKey: SERVER_PRIVATE_KEY,
-          zkAppAddress: ZKAPP_ADDRESS,
-          network: MINA_NETWORK,
-        });
-        onChainTx = result;
-        console.log('On-chain tx:', result.txHash);
-      } catch (onChainErr) {
-        console.error('On-chain recording failed (non-fatal):', onChainErr.message);
-      }
+        const { recordVerificationOnChain } = await import('./record.js');
+        const proofHash = createHash('sha256')
+          .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
+          .digest('hex');
+        onChainTx = await recordVerificationOnChain({ walletAddress, proofHash, dayTimestamp: ts, serverPrivateKey: SERVER_PRIVATE_KEY, zkAppAddress: ZKAPP_ADDRESS, network: MINA_NETWORK });
+        console.log('On-chain tx:', onChainTx.txHash);
+      } catch(e) { console.error('On-chain failed (non-fatal):', e.message); }
     }
 
-    res.json({
-      ok: true,
-      zkProof: proofJson,
-      zkPublicInput: { walletAddress, username, dayTimestamp: ts },
-      onChainTx,
-    });
+    res.json({ ok: true, zkProof: proofJson, zkPublicInput: { walletAddress, username, dayTimestamp: ts }, onChainTx });
 
   } catch (err) {
     console.error('Prove error:', err.message);
