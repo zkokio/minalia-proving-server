@@ -136,13 +136,16 @@ app.post('/prove', async (req, res) => {
           }));
           formData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
 
+          console.log('Uploading proof to Pinata IPFS...');
           const pinRes = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
             method: 'POST',
             headers: { Authorization: 'Bearer ' + pinataJWT },
             body: formData,
           });
 
-          if (!pinRes.ok) throw new Error('Pinata error: ' + await pinRes.text());
+          const pinText = await pinRes.text();
+          console.log('Pinata response status:', pinRes.status, 'body:', pinText.slice(0, 200));
+          if (!pinRes.ok) throw new Error('Pinata error ' + pinRes.status + ': ' + pinText);
           const pinData = await pinRes.json();
           const ipfsCid = pinData.IpfsHash;
           console.log('Proof pinned to IPFS:', ipfsCid);
