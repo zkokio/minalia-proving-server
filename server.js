@@ -150,7 +150,7 @@ app.post('/prove', async (req, res) => {
           const pinData = JSON.parse(pinText);
           const ipfsCid = pinData.IpfsHash;
           console.log('Proof pinned to IPFS:', ipfsCid);
-          console.log('View: https://cloudflare-ipfs.com/ipfs/' + ipfsCid);
+          console.log('View: https://dweb.link/ipfs/' + ipfsCid);
 
           // Save CID to DB
           if (supabaseUrl && supabaseKey) {
