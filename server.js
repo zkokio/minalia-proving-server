@@ -150,7 +150,7 @@ app.post('/prove', async (req, res) => {
           const pinData = JSON.parse(pinText);
           const ipfsCid = pinData.IpfsHash;
           console.log('Proof pinned to IPFS:', ipfsCid);
-          console.log('View: https://gateway.pinata.cloud/ipfs/' + ipfsCid);
+          console.log('View: https://ipfs.io/ipfs/' + ipfsCid);
 
           // Save CID to DB
           if (supabaseUrl && supabaseKey) {
