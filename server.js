@@ -126,27 +126,28 @@ app.post('/prove', async (req, res) => {
             generatedAt:         new Date().toISOString(),
           };
 
-          // Pin to IPFS via Pinata
-          const formData = new FormData();
-          const blob = new Blob([JSON.stringify(ipfsDoc, null, 2)], { type: 'application/json' });
-          formData.append('file', blob, 'minalia-proof-' + proofHash.slice(0, 16) + '.json');
-          formData.append('pinataMetadata', JSON.stringify({
-            name: 'Minalia ZK Proof — ' + walletAddr.slice(0, 16) + '…',
-            keyvalues: { walletAddress: walletAddr, proofHash, dayTimestamp: String(day) }
-          }));
-          formData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
-
+          // Pin to IPFS via Pinata JSON endpoint (simpler, no FormData)
           console.log('Uploading proof to Pinata IPFS...');
-          const pinRes = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+          const pinRes = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
             method: 'POST',
-            headers: { Authorization: 'Bearer ' + pinataJWT },
-            body: formData,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + pinataJWT,
+            },
+            body: JSON.stringify({
+              pinataContent: ipfsDoc,
+              pinataMetadata: {
+                name: 'Minalia ZK Proof — ' + walletAddr.slice(0, 16) + '…',
+                keyvalues: { walletAddress: walletAddr, proofHash, dayTimestamp: String(day) }
+              },
+              pinataOptions: { cidVersion: 1 }
+            }),
           });
 
           const pinText = await pinRes.text();
           console.log('Pinata response status:', pinRes.status, 'body:', pinText.slice(0, 200));
           if (!pinRes.ok) throw new Error('Pinata error ' + pinRes.status + ': ' + pinText);
-          const pinData = await pinRes.json();
+          const pinData = JSON.parse(pinText);
           const ipfsCid = pinData.IpfsHash;
           console.log('Proof pinned to IPFS:', ipfsCid);
           console.log('View: https://gateway.pinata.cloud/ipfs/' + ipfsCid);
