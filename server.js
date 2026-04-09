@@ -126,22 +126,25 @@ app.post('/prove', async (req, res) => {
             generatedAt:         new Date().toISOString(),
           };
 
-          // Pin to IPFS via Pinata JSON endpoint (simpler, no FormData)
+          // Pin to IPFS via Pinata — upload as named JSON file for proper download
           console.log('Uploading proof to Pinata IPFS...');
-          const pinRes = await fetch('https://api.pinata.cloud/pinning/pinJSONToIPFS', {
+          const { FormData: NodeFormData, Blob: NodeBlob } = await import('node:buffer').catch(() => ({}));
+          const FD = typeof FormData !== 'undefined' ? FormData : NodeFormData;
+          const BL = typeof Blob !== 'undefined' ? Blob : NodeBlob;
+          const fd = new FD();
+          const jsonStr = JSON.stringify(ipfsDoc, null, 2);
+          const filename = 'minalia-proof-' + walletAddr.slice(0, 10) + '.json';
+          fd.append('file', new BL([jsonStr], { type: 'application/json' }), filename);
+          fd.append('pinataMetadata', JSON.stringify({
+            name: filename,
+            keyvalues: { walletAddress: walletAddr, proofHash, dayTimestamp: String(day) }
+          }));
+          fd.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
+
+          const pinRes = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ' + pinataJWT,
-            },
-            body: JSON.stringify({
-              pinataContent: ipfsDoc,
-              pinataMetadata: {
-                name: 'Minalia ZK Proof — ' + walletAddr.slice(0, 16) + '…',
-                keyvalues: { walletAddress: walletAddr, proofHash, dayTimestamp: String(day) }
-              },
-              pinataOptions: { cidVersion: 1 }
-            }),
+            headers: { Authorization: 'Bearer ' + pinataJWT },
+            body: fd,
           });
 
           const pinText = await pinRes.text();
