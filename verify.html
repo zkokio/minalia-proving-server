@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Wallet Verification — MINALIA</title>
+  <link rel="icon" type="image/x-icon" href="images/favicon.ico">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" crossorigin="anonymous"></script>
+  <script src="config.js?v=20260320a"></script>
+  <script src="auth_auro.js?v=20260320a"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap');
+    body { overflow-x: hidden; min-height: 100vh; }
+    body::after { display: none; }
+    .stars { position: fixed; inset: 0; z-index: 0; pointer-events: none; }
+    .star { position: absolute; background: #fff; border-radius: 50%; animation: twinkle var(--d) ease-in-out infinite alternate; }
+    @keyframes twinkle { from { opacity: var(--a); } to { opacity: 0.02; } }
+    .scan { position: fixed; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(255,224,138,0.06), transparent); animation: scan 8s linear infinite; pointer-events: none; z-index: 1; }
+    @keyframes scan { from { top: -1px; } to { top: 100vh; } }
+
+    .verify-page { position: relative; z-index: 10; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 80px 24px 40px; }
+
+    .verify-card {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      max-width: 820px; width: 100%;
+      min-height: 500px;
+      background: rgba(10,8,20,0.92);
+      border: 1px solid rgba(255,224,138,0.12);
+      border-radius: 18px; overflow: hidden;
+      box-shadow: 0 0 80px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.03) inset;
+      animation: cardIn .5s cubic-bezier(.17,.67,.35,1.1) both;
+    }
+    @keyframes cardIn { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
+
+    /* LEFT: video */
+    .verify-left { position: relative; background: #07070e; overflow: hidden; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; gap: 10px; }
+    .verify-left video { width: 100%; height: auto; max-height: 480px; object-fit: contain; opacity: 0; transition: opacity 1.4s ease; border-radius: 4px; position: relative; z-index: 1; }
+    .verify-left video.loaded { opacity: 1; }
+    .verify-hex-bg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 64px; color: rgba(255,224,138,0.05); animation: hexPulse 4s ease-in-out infinite; z-index: 0; }
+    @keyframes hexPulse { 0%,100%{opacity:.5;transform:scale(.95)} 50%{opacity:1;transform:scale(1.05)} }
+    .verify-grad-right { position: absolute; top: 0; right: 0; bottom: 0; width: 40px; background: linear-gradient(to right, transparent, rgba(10,8,20,0.85)); pointer-events: none; z-index: 2; }
+    .verify-grad-bottom { display: none; }
+    .verify-minalien-name { font-family: 'Orbitron', monospace; font-size: 8px; font-weight: 700; letter-spacing: .2em; color: rgba(255,224,138,0.4); text-transform: uppercase; position: relative; z-index: 1; }
+
+    /* RIGHT: proof */
+    .verify-right { padding: 32px 28px; display: flex; flex-direction: column; border-left: 1px solid rgba(255,255,255,0.04); }
+    .verify-logo { display: flex; align-items: center; gap: 8px; margin-bottom: 24px; }
+    .verify-logo img { height: 22px; }
+    .verify-logo-text { font-family: 'Orbitron', monospace; font-size: 13px; font-weight: 900; letter-spacing: .14em; background: linear-gradient(135deg,#FFE08A,#FFF4D6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+
+    /* States */
+    #stateLoading,#stateVerified,#stateNotFound,#stateError { display: none; flex: 1; flex-direction: column; }
+    #stateLoading.active,#stateVerified.active,#stateNotFound.active,#stateError.active { display: flex; }
+
+    .verify-spinner { width: 32px; height: 32px; border: 2px solid rgba(255,224,138,0.1); border-top-color: rgba(255,224,138,0.6); border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 12px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .verify-loading-text { font-family: 'Share Tech Mono', monospace; font-size: 10px; color: rgba(255,255,255,0.25); letter-spacing: .1em; }
+
+    .verify-check { font-size: 32px; color: rgba(96,255,171,0.9); margin-bottom: 4px; animation: checkPop .4s cubic-bezier(.17,.67,.35,1.5) .2s both; }
+    @keyframes checkPop { from{transform:scale(0) rotate(-20deg);opacity:0} to{transform:scale(1) rotate(0);opacity:1} }
+    .verify-username { font-family: 'Orbitron', monospace; font-size: 20px; font-weight: 900; letter-spacing: .08em; background: linear-gradient(135deg,#FFE08A,#FFF4D6); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 3px; }
+    .verify-tagline { font-family: 'Share Tech Mono', monospace; font-size: 9px; color: rgba(96,255,171,0.4); letter-spacing: .14em; text-transform: uppercase; margin-bottom: 20px; }
+
+    .verify-stats { display: flex; margin-bottom: 18px; background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; overflow: hidden; }
+    .verify-stat { flex: 1; padding: 9px 10px; text-align: center; border-right: 1px solid rgba(255,255,255,0.05); }
+    .verify-stat:last-child { border-right: none; }
+    .verify-stat-val { font-family: 'Orbitron', monospace; font-size: 13px; font-weight: 700; color: rgba(255,224,138,0.9); margin-bottom: 2px; }
+    .verify-stat-label { font-family: 'Share Tech Mono', monospace; font-size: 8px; color: rgba(255,255,255,0.22); letter-spacing: .1em; text-transform: uppercase; }
+
+    .verify-proof-box { flex: 1; background: rgba(96,255,171,0.025); border: 1px solid rgba(96,255,171,0.08); border-radius: 8px; padding: 12px 14px; margin-bottom: 16px; }
+    .verify-proof-row { display: flex; gap: 10px; padding: 6px 0; border-bottom: 1px solid rgba(255,255,255,0.04); align-items: flex-start; }
+    .verify-proof-row:last-child { border-bottom: none; padding-bottom: 0; }
+    .verify-proof-key { font-family: 'Share Tech Mono', monospace; font-size: 8px; color: rgba(96,255,171,0.38); letter-spacing: .1em; text-transform: uppercase; min-width: 66px; padding-top: 1px; flex-shrink: 0; }
+    .verify-proof-val { font-family: 'Share Tech Mono', monospace; font-size: 9px; color: rgba(255,255,255,0.42); word-break: break-all; line-height: 1.55; }
+    .verify-proof-val.green { color: rgba(96,255,171,0.65); }
+    .verify-proof-val.amber { color: rgba(255,224,138,0.65); }
+
+    .verify-actions { display: flex; flex-direction: column; gap: 7px; }
+    .verify-btn { display: flex; align-items: center; justify-content: center; gap: 5px; padding: 9px 16px; border-radius: 7px; font-family: 'Share Tech Mono', monospace; font-size: 10px; letter-spacing: .08em; text-decoration: none; transition: all .2s; border: none; cursor: pointer; }
+    .verify-btn-primary { background: rgba(96,255,171,0.07); border: 1px solid rgba(96,255,171,0.18); color: rgba(96,255,171,0.75); }
+    .verify-btn-primary:hover { background: rgba(96,255,171,0.12); border-color: rgba(96,255,171,0.3); }
+    .verify-btn-secondary { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); color: rgba(255,255,255,0.32); }
+    .verify-btn-secondary:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.52); }
+
+    .verify-center { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+    .verify-icon-xl { font-size: 38px; margin-bottom: 12px; }
+    .verify-title { font-family: 'Orbitron', monospace; font-size: 13px; font-weight: 700; letter-spacing: .1em; margin-bottom: 8px; }
+    .verify-title.red { color: rgba(255,100,100,0.8); }
+    .verify-title.amber { color: rgba(255,224,138,0.7); }
+    .verify-subtitle { font-family: 'Share Tech Mono', monospace; font-size: 10px; color: rgba(255,255,255,0.28); line-height: 1.8; margin-bottom: 18px; }
+
+    @media (max-width: 660px) {
+      .verify-card { grid-template-columns: 1fr; }
+      .verify-left { height: 200px; }
+      .verify-right { border-left: none; border-top: 1px solid rgba(255,255,255,0.05); }
+    }
+  </style>
+</head>
+<body>
+<div class="stars" id="stars"></div>
+<div class="scan"></div>
+<nav class="nav" id="mainNav"></nav>
+
+<div class="verify-page">
+  <div class="verify-card">
+
+    <!-- LEFT: Video -->
+    <div class="verify-left">
+      <div class="verify-hex-bg">⬡</div>
+      <video id="verifyVid" autoplay muted playsinline loop></video>
+      <div class="verify-grad-right"></div>
+      <div class="verify-grad-bottom">
+        <div class="verify-minalien-name" id="minalienName"></div>
+      </div>
+    </div>
+
+    <!-- RIGHT: Proof -->
+    <div class="verify-right">
+      <div class="verify-logo">
+        <img src="images/logo.png" onerror="this.style.display='none'" alt="">
+        <div class="verify-logo-text">MINALIA</div>
+      </div>
+
+      <div id="stateLoading" class="active">
+        <div class="verify-center" style="align-items:flex-start">
+          <div class="verify-spinner"></div>
+          <div class="verify-loading-text">Checking record…</div>
+        </div>
+      </div>
+
+      <div id="stateVerified">
+        <div class="verify-check">✓</div>
+        <div class="verify-username" id="vUsername"></div>
+        <div class="verify-tagline">Verified Minalian · Mina Protocol</div>
+        <div class="verify-stats">
+          <div class="verify-stat">
+            <div class="verify-stat-val" id="vUnits">—</div>
+            <div class="verify-stat-label">Units</div>
+          </div>
+          <div class="verify-stat">
+            <div class="verify-stat-val" id="vDate">—</div>
+            <div class="verify-stat-label">Verified</div>
+          </div>
+          <div class="verify-stat">
+            <div class="verify-stat-val" id="vType">—</div>
+            <div class="verify-stat-label">Player</div>
+          </div>
+        </div>
+        <div class="verify-proof-box">
+          <div class="verify-proof-row">
+            <div class="verify-proof-key">Wallet</div>
+            <div class="verify-proof-val amber" id="vWallet"></div>
+          </div>
+          <div class="verify-proof-row">
+            <div class="verify-proof-key">Proof</div>
+            <div class="verify-proof-val green" id="vHash"></div>
+          </div>
+          <div class="verify-proof-row">
+            <div class="verify-proof-key">Protocol</div>
+            <div class="verify-proof-val green">Mina · o1js ZkProgram · Schnorr</div>
+          </div>
+          <div class="verify-proof-row">
+            <div class="verify-proof-key">Status</div>
+            <div class="verify-proof-val green">✓ Valid attestation on record</div>
+          </div>
+          <div class="verify-proof-row" id="vIpfsRow" style="display:none">
+            <div class="verify-proof-key">IPFS</div>
+            <div class="verify-proof-val"><a id="vIpfsLink" href="#" target="_blank" rel="noopener" style="color:rgba(96,255,171,0.65);text-decoration:none;">View full proof on IPFS ↗</a></div>
+          </div>
+        </div>
+        <div class="verify-actions">
+          <a id="vProfileLink" href="#" class="verify-btn verify-btn-primary">View player profile →</a>
+          <a id="vMinascanLink" href="#" target="_blank" rel="noopener" class="verify-btn verify-btn-secondary">View on Minascan ↗</a>
+          <div id="vMinascanNote" style="font-family:'Share Tech Mono',monospace;font-size:8px;color:rgba(255,255,255,0.2);line-height:1.6;text-align:center;display:none;">
+            ⏱ On-chain transactions may take a few minutes to appear on Minascan after verification.
+          </div>
+        </div>
+      </div>
+
+      <div id="stateNotFound">
+        <div class="verify-center">
+          <div class="verify-icon-xl">⬡</div>
+          <div class="verify-title amber">NOT VERIFIED</div>
+          <div class="verify-subtitle" id="notFoundMsg">This wallet has not completed verification in Minalia.</div>
+          <a href="https://play.minaliens.xyz" class="verify-btn verify-btn-secondary" style="align-self:flex-start">← Back to Minalia</a>
+        </div>
+      </div>
+
+      <div id="stateError">
+        <div class="verify-center">
+          <div class="verify-icon-xl">⚠</div>
+          <div class="verify-title red">ERROR</div>
+          <div class="verify-subtitle" id="errorMsg">Something went wrong.</div>
+          <a href="javascript:location.reload()" class="verify-btn verify-btn-secondary" style="align-self:flex-start">↺ Retry</a>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// Stars
+const starsEl = document.getElementById('stars');
+for (let i = 0; i < 80; i++) {
+  const s = document.createElement('div'); s.className = 'star';
+  const sz = Math.random() * 1.8 + 0.3;
+  s.style.cssText = 'left:' + (Math.random()*100) + '%;top:' + (Math.random()*100) + '%;width:' + sz + 'px;height:' + sz + 'px;--d:' + (2+Math.random()*5).toFixed(1) + 's;--a:' + (0.06+Math.random()*0.55).toFixed(2) + ';';
+  starsEl.appendChild(s);
+}
+
+// Random video
+const VIDEOS = ['angel','bane','blip','bolt','cove','crux','dario','drip','faze','fizz','flux','frog','fume','gaze','grip','grit','gyro','halo','hexa','jaxx','jolt','kelp','kilo','knob','luma','lush','mace','mino','mova','nova','nuke','raze','rory','sike','skip','talha','thud','vale','vera','vibe','volt','voxx','wise','wisp','yasin','zeal','zeko','zorb','zorg','zoro','zync'];
+const pick = VIDEOS[Math.floor(Math.random() * VIDEOS.length)];
+const vid = document.getElementById('verifyVid');
+document.getElementById('minalienName').textContent = pick.toUpperCase() + ' · Minalien';
+fetch('videos/' + pick + '.mp4', { method: 'HEAD' })
+  .then(r => { if (!r.ok) throw new Error(); vid.src = 'videos/' + pick + '.mp4'; vid.oncanplay = () => vid.classList.add('loaded'); vid.load(); })
+  .catch(() => { vid.src = 'videos/frog.mp4'; vid.oncanplay = () => vid.classList.add('loaded'); vid.load(); document.getElementById('minalienName').textContent = 'FROG · Minalien'; });
+
+// States
+function showState(id) {
+  ['stateLoading','stateVerified','stateNotFound','stateError'].forEach(s => document.getElementById(s).classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+// Load
+const params = new URLSearchParams(window.location.search);
+const wallet = params.get('wallet') || params.get('w');
+if (!wallet) { showState('stateNotFound'); document.getElementById('notFoundMsg').textContent = 'No wallet address provided. Use ?wallet=B62q… in the URL.'; }
+else { loadVerification(wallet); }
+
+async function loadVerification(walletAddress) {
+  try {
+    let attempts = 0;
+    while (!window.supabase && attempts < 30) { await new Promise(r => setTimeout(r, 100)); attempts++; }
+    if (!window.supabase) throw new Error('Database not available');
+
+    const { data: user, error } = await window.supabase
+      .from('users')
+      .select('id, username, player_type, zk_verified_at, zk_proof_hash, zk_ipfs_cid, mina_wallet_address')
+      .eq('mina_wallet_address', walletAddress)
+      .maybeSingle();
+
+    if (error) throw new Error(error.message);
+    if (!user || !user.zk_verified_at) {
+      showState('stateNotFound');
+      if (user && !user.zk_verified_at) document.getElementById('notFoundMsg').textContent = (user.username || 'This wallet') + ' is registered in Minalia but has not completed wallet verification yet.';
+      return;
+    }
+
+    const { count: unitCount } = await window.supabase.from('units').select('unit_code', { count: 'exact', head: true }).eq('owner_id', user.id);
+    const verDate = new Date(user.zk_verified_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+
+    document.getElementById('vUsername').textContent = user.username || 'Minalian';
+    document.getElementById('vUnits').textContent    = unitCount ?? '—';
+    document.getElementById('vDate').textContent     = verDate;
+    document.getElementById('vType').textContent     = user.player_type === 'og' ? 'OG' : (user.player_type || '—');
+    document.getElementById('vWallet').textContent   = walletAddress.slice(0,10) + '…' + walletAddress.slice(-6);
+    document.getElementById('vHash').textContent     = (user.zk_proof_hash || '—').slice(0, 28) + '…';
+    // Use devnet until mainnet launch
+    const minaNetwork = 'devnet';
+    const minascanBase = 'https://minascan.io/' + minaNetwork;
+    document.getElementById('vMinascanLink').href    = minascanBase + '/account/' + walletAddress;
+
+    // Show delay note if verified recently (within last 10 minutes)
+    const verifiedMs = new Date(user.zk_verified_at).getTime();
+    const ageMinutes = (Date.now() - verifiedMs) / 60000;
+    if (ageMinutes < 10) {
+      const note = document.getElementById('vMinascanNote');
+      if (note) note.style.display = 'block';
+    }
+    document.getElementById('vProfileLink').href     = 'profile.html?user=' + user.username;
+    if (user.zk_ipfs_cid) {
+      const ipfsRow  = document.getElementById('vIpfsRow');
+      const ipfsLink = document.getElementById('vIpfsLink');
+      if (ipfsRow)  ipfsRow.style.display = 'flex';
+      if (ipfsLink) ipfsLink.href = 'https://gateway.pinata.cloud/ipfs/' + user.zk_ipfs_cid;
+    }
+    document.title = user.username + ' — Verified Minalian';
+    showState('stateVerified');
+  } catch (err) {
+    document.getElementById('errorMsg').textContent = err.message;
+    showState('stateError');
+  }
+}
+</script>
+</body>
+</html>

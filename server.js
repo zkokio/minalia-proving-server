@@ -100,8 +100,74 @@ app.post('/prove', async (req, res) => {
     // Respond immediately
     res.json({ ok: true, zkProof: proofJson, zkPublicInput: { walletAddress, username, dayTimestamp: ts }, onChainTx: null });
 
-    // Background: record on-chain
-    if (process.env.ZKAPP_ADDRESS) {
+    // Upload proof to IPFS via Pinata (fire-and-forget)
+    if (process.env.PINATA_JWT) {
+      const pinataJWT   = process.env.PINATA_JWT;
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+      const walletAddr  = walletAddress;
+      const day         = ts;
+      const proofData   = proofJson;
+      const proofHash   = createHash('sha256')
+        .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
+        .digest('hex');
+
+      setImmediate(async () => {
+        try {
+          // Build the proof document
+          const ipfsDoc = {
+            protocol:            'Mina Protocol / o1js MinalianVerification ZkProgram',
+            verificationKeyHash: '9593722557951211419106663534603742997598351560074849689831849095336735130217',
+            serverPublicKey:     SERVER_PUBLIC_KEY,
+            walletAddress:       walletAddr,
+            dayTimestamp:        day,
+            proofHash,
+            zkProof:             proofData,
+            generatedAt:         new Date().toISOString(),
+          };
+
+          // Pin to IPFS via Pinata
+          const formData = new FormData();
+          const blob = new Blob([JSON.stringify(ipfsDoc, null, 2)], { type: 'application/json' });
+          formData.append('file', blob, 'minalia-proof-' + proofHash.slice(0, 16) + '.json');
+          formData.append('pinataMetadata', JSON.stringify({
+            name: 'Minalia ZK Proof — ' + walletAddr.slice(0, 16) + '…',
+            keyvalues: { walletAddress: walletAddr, proofHash, dayTimestamp: String(day) }
+          }));
+          formData.append('pinataOptions', JSON.stringify({ cidVersion: 1 }));
+
+          const pinRes = await fetch('https://api.pinata.cloud/pinning/pinFileToIPFS', {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + pinataJWT },
+            body: formData,
+          });
+
+          if (!pinRes.ok) throw new Error('Pinata error: ' + await pinRes.text());
+          const pinData = await pinRes.json();
+          const ipfsCid = pinData.IpfsHash;
+          console.log('Proof pinned to IPFS:', ipfsCid);
+          console.log('View: https://gateway.pinata.cloud/ipfs/' + ipfsCid);
+
+          // Save CID to DB
+          if (supabaseUrl && supabaseKey) {
+            await fetch(supabaseUrl + '/rest/v1/users?mina_wallet_address=eq.' + walletAddr, {
+              method: 'PATCH',
+              headers: {
+                'Content-Type': 'application/json',
+                'apikey': supabaseKey,
+                'Authorization': 'Bearer ' + supabaseKey,
+              },
+              body: JSON.stringify({ zk_ipfs_cid: ipfsCid }),
+            });
+            console.log('IPFS CID saved to DB:', ipfsCid);
+          }
+        } catch(e) {
+          console.error('IPFS upload failed (non-fatal):', e.message);
+        }
+      });
+    }
+
+    if (false) {
       const proofHash = createHash('sha256')
         .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
         .digest('hex');
