@@ -100,7 +100,7 @@ async function recordVerificationOnChain({ walletAddress, proofHash, dayTimestam
         },
     };
     const net = NETS[network];
-    o1js_1.Mina.setActiveInstance(o1js_1.Mina.Network({ mina: net.mina, archive: net.archive }));
+    o1js_1.Mina.setActiveInstance(o1js_1.Mina.Network({ mina: net.mina, archive: net.archive, networkId: network === 'mainnet' ? 'mainnet' : 'testnet' }));
     const serverKey = o1js_1.PrivateKey.fromBase58(serverPrivateKey);
     const serverPub = serverKey.toPublicKey();
     const zkPub = o1js_1.PublicKey.fromBase58(zkAppAddress);
