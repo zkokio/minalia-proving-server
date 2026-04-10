@@ -221,36 +221,6 @@ app.post('/prove', async (req, res) => {
   }
 });
 
-// ── One-time mainnet deploy endpoint — runs in isolated child process ──
-app.post('/deploy-mainnet', async (req, res) => {
-  const { secret } = req.body;
-  if (secret !== process.env.DEPLOY_SECRET) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  try {
-    console.log('Spawning deploy worker...');
-    const worker = fork(join(__dirname, 'deploy-worker.cjs'));
-    const timeout = setTimeout(() => {
-      worker.kill();
-      if (!res.headersSent) res.status(504).json({ error: 'Deploy timed out after 5 mins' });
-    }, 300000);
 
-    worker.on('message', (msg) => {
-      clearTimeout(timeout);
-      if (!res.headersSent) res.json(msg.ok ? msg.result : { error: msg.error });
-    });
-    worker.on('error', (e) => {
-      clearTimeout(timeout);
-      if (!res.headersSent) res.status(500).json({ error: e.message });
-    });
-    worker.on('exit', (code) => {
-      clearTimeout(timeout);
-      if (!res.headersSent && code !== 0) res.status(500).json({ error: 'Worker exited with code ' + code });
-    });
-  } catch(e) {
-    console.error('Deploy error:', e.message);
-    if (!res.headersSent) res.status(500).json({ error: e.message });
-  }
-});
 
 app.listen(PORT, () => console.log('Minalia proving server on port', PORT));
