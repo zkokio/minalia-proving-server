@@ -15,16 +15,14 @@ async function deploy(network = 'mainnet') {
   const net = NETS[network];
   Mina.setActiveInstance(Mina.Network({ mina: net.mina, archive: net.archive }));
 
-  const zkAppKey  = PrivateKey.fromBase58(ZKAPP_PRIVATE_KEY);
-  const zkAppPub  = zkAppKey.toPublicKey();
-  const serverKey = PrivateKey.fromBase58(SERVER_PRIVATE_KEY);
-  const serverPub = serverKey.toPublicKey();
+  const zkAppKey = PrivateKey.fromBase58(ZKAPP_PRIVATE_KEY);
+  const zkAppPub = zkAppKey.toPublicKey();
 
-  console.log('zkApp address:', zkAppPub.toBase58());
-  console.log('Fee payer:    ', serverPub.toBase58());
+  // zkApp address has the 99.75 MINA — use it as both fee payer and zkApp
+  console.log('zkApp/fee payer address:', zkAppPub.toBase58());
 
-  // Check if already deployed
   const zkAcc = await fetchAccount({ publicKey: zkAppPub });
+  console.log('Account exists:', !!zkAcc.account, 'Balance:', zkAcc.account?.balance?.toString());
   if (zkAcc.account?.zkapp) {
     return { ok: true, message: 'Already deployed', address: zkAppPub.toBase58() };
   }
@@ -33,13 +31,13 @@ async function deploy(network = 'mainnet') {
   await MinaliaVerifier.compile();
   console.log('Compiled. Deploying...');
 
-  const tx = await Mina.transaction({ sender: serverPub, fee: 100_000_000 }, async () => {
-    AccountUpdate.fundNewAccount(serverPub);
+  // Self-deploy: fee payer and zkApp are the same account
+  const tx = await Mina.transaction({ sender: zkAppPub, fee: 100_000_000 }, async () => {
     const zkApp = new MinaliaVerifier(zkAppPub);
     await zkApp.deploy();
   });
   await tx.prove();
-  tx.sign([serverKey, zkAppKey]);
+  tx.sign([zkAppKey]);
   const sent = await tx.send();
 
   return {
