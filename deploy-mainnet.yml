@@ -1,0 +1,27 @@
+# .github/workflows/deploy-mainnet.yml
+# Run once manually via GitHub Actions → Actions tab → Deploy MinaliaVerifier to Mainnet → Run workflow
+
+name: Deploy MinaliaVerifier to Mainnet
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+        working-directory: .
+
+      - name: Deploy to mainnet
+        run: node deploy-mainnet.mjs
+        working-directory: .
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
