@@ -71,38 +71,41 @@ class MinaliaVerifier extends SmartContract {
 async function main() {
   const MAINNET = 'https://api.minascan.io/node/mainnet/v1/graphql';
   const ARCHIVE = 'https://api.minascan.io/archive/mainnet/v1/graphql';
-  const ZKAPP_PRIVATE_KEY = '${ZKAPP_PRIVATE_KEY}';
-  const ZKAPP_ADDRESS     = '${ZKAPP_ADDRESS}';
+  // Fee payer = existing funded wallet (B62qoT7...)
+  // zkApp = fresh unfunded address (B62qrmr7...)
+  const FEE_PAYER_KEY   = '${ZKAPP_PRIVATE_KEY}';
+  const FEE_PAYER_ADDR  = '${ZKAPP_ADDRESS}';
+  const ZKAPP_PRIV      = 'EKEtrsnmpwaMKo8hBabBnoWersto29LpLXkxDE98jFGTeYfJvQwg';
+  const ZKAPP_ADDR      = 'B62qrmr7hZjMkAdfcSXr1A1bYTn1vQEvGFVYe5yKitPmtWE5RNjHEtf';
 
   Mina.setActiveInstance(Mina.Network({ mina: MAINNET, archive: ARCHIVE }));
 
-  const zkKey = PrivateKey.fromBase58(ZKAPP_PRIVATE_KEY);
-  const zkPub = PublicKey.fromBase58(ZKAPP_ADDRESS);
+  const feePayerKey = PrivateKey.fromBase58(FEE_PAYER_KEY);
+  const feePayerPub = PublicKey.fromBase58(FEE_PAYER_ADDR);
+  const zkKey = PrivateKey.fromBase58(ZKAPP_PRIV);
+  const zkPub = PublicKey.fromBase58(ZKAPP_ADDR);
 
+  console.log('Fee payer:', feePayerPub.toBase58());
   console.log('zkApp address:', zkPub.toBase58());
 
-  const { account } = await fetchAccount({ publicKey: zkPub });
-  console.log('Account found:', !!account);
-  console.log('Balance:', account ? Number(account.balance.toBigInt()) / 1e9 + ' MINA' : 'N/A');
+  const { account: fpAcc } = await fetchAccount({ publicKey: feePayerPub });
+  console.log('Fee payer balance:', fpAcc ? Number(fpAcc.balance.toBigInt()) / 1e9 + ' MINA' : 'NOT FOUND');
+  if (!fpAcc) { console.error('Fee payer not found on mainnet.'); process.exit(1); }
 
-  if (!account) { console.error('Account not found on mainnet.'); process.exit(1); }
-  if (account.zkapp) { console.log('Already deployed!'); process.exit(0); }
+  const { account: zkAcc } = await fetchAccount({ publicKey: zkPub });
+  if (zkAcc?.zkapp) { console.log('Already deployed!'); process.exit(0); }
 
   console.log('Compiling MinaliaVerifier...');
   await MinaliaVerifier.compile();
   console.log('Compiled. Deploying...');
 
-  // Fetch nonce explicitly to avoid stale nonce issues
-  const { account: freshAccount } = await fetchAccount({ publicKey: zkPub });
-  const nonce = Number(freshAccount?.nonce ?? 0);
-  console.log('Nonce:', nonce);
-
   const zkApp = new MinaliaVerifier(zkPub);
-  const tx = await Mina.transaction({ sender: zkPub, fee: 100_000_000, nonce, memo: 'Minalia zkApp deploy' }, async () => {
+  const tx = await Mina.transaction({ sender: feePayerPub, fee: 100_000_000, memo: 'Minalia zkApp deploy' }, async () => {
+    AccountUpdate.fundNewAccount(feePayerPub);
     await zkApp.deploy();
   });
   await tx.prove();
-  tx.sign([zkKey]);
+  tx.sign([feePayerKey, zkKey]);
 
   console.log('Sending deploy transaction...');
   const sent = await tx.send();
