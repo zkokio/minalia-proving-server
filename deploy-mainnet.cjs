@@ -78,7 +78,7 @@ async function main() {
   const ZKAPP_PRIV      = 'EKEtrsnmpwaMKo8hBabBnoWersto29LpLXkxDE98jFGTeYfJvQwg';
   const ZKAPP_ADDR      = 'B62qrmr7hZjMkAdfcSXr1A1bYTn1vQEvGFVYe5yKitPmtWE5RNjHEtf';
 
-  Mina.setActiveInstance(Mina.Network({ mina: MAINNET, archive: ARCHIVE }));
+  Mina.setActiveInstance(Mina.Network({ mina: MAINNET, archive: ARCHIVE, networkId: 'mainnet' }));
 
   const feePayerKey = PrivateKey.fromBase58(FEE_PAYER_KEY);
   const feePayerPub = PublicKey.fromBase58(FEE_PAYER_ADDR);
