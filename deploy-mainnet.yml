@@ -21,7 +21,7 @@ jobs:
         working-directory: .
 
       - name: Deploy to mainnet
-        run: node deploy-mainnet.mjs
+        run: node deploy-mainnet.cjs
         working-directory: .
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
