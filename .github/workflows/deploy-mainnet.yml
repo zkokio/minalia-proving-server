@@ -14,6 +14,6 @@ jobs:
       - name: Install dependencies
         run: npm install
       - name: Deploy to mainnet
-        run: node deploy-mainnet.cjs
+       run: node deploy-mainnet.mjs
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
