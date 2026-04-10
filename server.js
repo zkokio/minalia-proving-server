@@ -221,57 +221,35 @@ app.post('/prove', async (req, res) => {
   }
 });
 
-// ── One-time mainnet deploy endpoint ──
+// ── One-time mainnet deploy endpoint — runs in isolated child process ──
 app.post('/deploy-mainnet', async (req, res) => {
   const { secret } = req.body;
   if (secret !== process.env.DEPLOY_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   try {
-    const { createRequire } = await import('module');
-    const require = createRequire(import.meta.url);
-    const { MinaliaVerifier } = require('./MinaliaVerifier.cjs');
-    // o1js imported at top level
+    console.log('Spawning deploy worker...');
+    const worker = fork(join(__dirname, 'deploy-worker.cjs'));
+    const timeout = setTimeout(() => {
+      worker.kill();
+      if (!res.headersSent) res.status(504).json({ error: 'Deploy timed out after 5 mins' });
+    }, 300000);
 
-    const ZKAPP_PRIVATE_KEY  = 'EKEbTpyViqHqqhL5CBwEfbuk2xgtakja8vciLY33juYAvGEPjCUS';
-    const network = Mina.Network({
-      mina:    'https://api.minascan.io/node/mainnet/v1/graphql',
-      archive: 'https://api.minascan.io/archive/mainnet/v1/graphql',
+    worker.on('message', (msg) => {
+      clearTimeout(timeout);
+      if (!res.headersSent) res.json(msg.ok ? msg.result : { error: msg.error });
     });
-    Mina.setActiveInstance(network);
-
-    const zkAppKey  = PrivateKey.fromBase58(ZKAPP_PRIVATE_KEY);
-    const zkAppPub  = zkAppKey.toPublicKey();
-    const serverKey = PrivateKey.fromBase58(SERVER_PRIVATE_KEY);
-    const serverPub = serverKey.toPublicKey();
-
-    console.log('Deploy request — zkApp:', zkAppPub.toBase58());
-    console.log('Fee payer:', serverPub.toBase58());
-
-    // Check if already deployed
-    const zkAcc = await fetchAccount({ publicKey: zkAppPub });
-    if (zkAcc.account?.zkapp) {
-      return res.json({ ok: true, message: 'Already deployed on mainnet', address: zkAppPub.toBase58() });
-    }
-
-    console.log('Compiling MinaliaVerifier for deploy...');
-    await MinaliaVerifier.compile();
-    console.log('Compiled — deploying...');
-
-    const tx = await Mina.transaction({ sender: serverPub, fee: 100_000_000 }, async () => {
-      AccountUpdate.fundNewAccount(serverPub);
-      const zkApp = new MinaliaVerifier(zkAppPub);
-      await zkApp.deploy();
+    worker.on('error', (e) => {
+      clearTimeout(timeout);
+      if (!res.headersSent) res.status(500).json({ error: e.message });
     });
-    await tx.prove();
-    tx.sign([serverKey, zkAppKey]);
-    const sent = await tx.send();
-
-    console.log('Deploy tx:', sent.hash);
-    res.json({ ok: true, txHash: sent.hash, explorerUrl: 'https://minascan.io/mainnet/tx/' + sent.hash });
+    worker.on('exit', (code) => {
+      clearTimeout(timeout);
+      if (!res.headersSent && code !== 0) res.status(500).json({ error: 'Worker exited with code ' + code });
+    });
   } catch(e) {
     console.error('Deploy error:', e.message);
-    res.status(500).json({ error: e.message });
+    if (!res.headersSent) res.status(500).json({ error: e.message });
   }
 });
 
