@@ -44,30 +44,15 @@ const MinalianVerification = ZkProgram({
   }
 });
 
-// Compile ONCE at startup — ZkProgram first, then MinaliaVerifier sequentially
+// Compile ONCE at startup — never compile again
 let compiled = false;
-let verifierCompiled = false;
 let compilePromise = null;
-const { createRequire } = await import('module');
-const require = createRequire(import.meta.url);
-const { MinaliaVerifier } = require('./MinaliaVerifier.cjs');
-
 async function ensureCompiled() {
   if (compiled) return;
   if (compilePromise) return compilePromise;
   console.log('Compiling ZkProgram...');
   compilePromise = MinalianVerification.compile()
-    .then(async () => {
-      compiled = true;
-      console.log('ZkProgram compiled. Compiling MinaliaVerifier...');
-      try {
-        await MinaliaVerifier.compile();
-        verifierCompiled = true;
-        console.log('MinaliaVerifier compiled. Both ready.');
-      } catch(e) {
-        console.error('MinaliaVerifier compile failed (non-fatal):', e.message);
-      }
-    });
+    .then(() => { compiled = true; console.log('Compiled.'); });
   return compilePromise;
 }
 ensureCompiled().catch(err => console.error('Compile error:', err));
@@ -193,39 +178,8 @@ app.post('/prove', async (req, res) => {
       });
     }
 
-    // On-chain recording — MinaliaVerifier already compiled at startup
-    if (process.env.ZKAPP_ADDRESS && process.env.MINA_NETWORK && verifierCompiled) {
-      const proofHash = createHash('sha256')
-        .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
-        .digest('hex');
-      const zkAppPrivKey = process.env.ZKAPP_PRIVATE_KEY || 'EKEbTpyViqHqqhL5CBwEfbuk2xgtakja8vciLY33juYAvGEPjCUS';
-      setImmediate(async () => {
-        try {
-          const { recordVerificationOnChain } = require('./MinaliaVerifier.cjs');
-          const result = await recordVerificationOnChain({
-            walletAddress, proofHash, dayTimestamp: ts,
-            serverPrivateKey: SERVER_PRIVATE_KEY,
-            zkAppPrivateKey: zkAppPrivKey,
-            zkAppAddress: process.env.ZKAPP_ADDRESS,
-            network: process.env.MINA_NETWORK,
-          });
-          console.log('On-chain tx:', result.txHash);
-          console.log('Explorer:', result.explorerUrl);
-          const url = process.env.SUPABASE_URL;
-          const key = process.env.SUPABASE_SERVICE_KEY;
-          if (url && key) {
-            await fetch(url + '/rest/v1/users?mina_wallet_address=eq.' + walletAddress, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json', 'apikey': key, 'Authorization': 'Bearer ' + key },
-              body: JSON.stringify({ zk_onchain_tx: result.txHash }),
-            });
-            console.log('On-chain tx saved to DB.');
-          }
-        } catch(e) { console.error('On-chain failed (non-fatal):', e.message); }
-      });
-    } else if (!verifierCompiled) {
-      console.log('MinaliaVerifier not yet compiled — skipping on-chain recording for this verification.');
-    }
+    // On-chain recording handled via GitHub Actions workflow (record-onchain.yml)
+    // Triggered manually or via webhook after verification
 
   } catch (err) {
     console.error('Prove error:', err.message);
