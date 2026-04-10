@@ -101,11 +101,13 @@ async function recordVerificationOnChain({ walletAddress, proofHash, dayTimestam
     };
     const net = NETS[network];
     o1js_1.Mina.setActiveInstance(o1js_1.Mina.Network({ mina: net.mina, archive: net.archive, networkId: network === 'mainnet' ? 'mainnet' : 'testnet' }));
-    const serverKey = o1js_1.PrivateKey.fromBase58(serverPrivateKey);
-    const serverPub = serverKey.toPublicKey();
+    // Use zkApp key as fee payer — it holds the mainnet MINA (B62qoT7...)
+    const ZKAPP_FEE_PAYER_KEY = 'EKEbTpyViqHqqhL5CBwEfbuk2xgtakja8vciLY33juYAvGEPjCUS';
+    const feePayerKey = o1js_1.PrivateKey.fromBase58(ZKAPP_FEE_PAYER_KEY);
+    const feePayerPub = feePayerKey.toPublicKey();
     const zkPub = o1js_1.PublicKey.fromBase58(zkAppAddress);
     const walletPub = o1js_1.PublicKey.fromBase58(walletAddress);
-    await (0, o1js_1.fetchAccount)({ publicKey: serverPub });
+    await (0, o1js_1.fetchAccount)({ publicKey: feePayerPub });
     await (0, o1js_1.fetchAccount)({ publicKey: zkPub });
     // Split 64-char hex proof hash into two Field values (128 bits each)
     const hashBig = BigInt('0x' + proofHash.padStart(64, '0'));
@@ -116,11 +118,11 @@ async function recordVerificationOnChain({ walletAddress, proofHash, dayTimestam
     await MinaliaVerifier.compile();
     console.log('Compiled.');
     const zkApp = new MinaliaVerifier(zkPub);
-    const tx = await o1js_1.Mina.transaction({ sender: serverPub, fee: 10_000_000 }, async () => {
+    const tx = await o1js_1.Mina.transaction({ sender: feePayerPub, fee: 10_000_000 }, async () => {
         await zkApp.recordVerification(walletPub, proofHashLow, proofHashHigh, (0, o1js_1.Field)(dayTimestamp));
     });
     await tx.prove();
-    tx.sign([serverKey]);
+    tx.sign([feePayerKey]);
     const sent = await tx.send();
     return {
         txHash: sent.hash,
