@@ -92,11 +92,13 @@ async function main() {
   await MinaliaVerifier.compile();
   console.log('Compiled. Deploying...');
 
+  // Fetch nonce explicitly to avoid stale nonce issues
+  const { account: freshAccount } = await fetchAccount({ publicKey: zkPub });
+  const nonce = Number(freshAccount?.nonce ?? 0);
+  console.log('Nonce:', nonce);
+
   const zkApp = new MinaliaVerifier(zkPub);
-  const tx = await Mina.transaction({ sender: zkPub, fee: 100_000_000 }, async () => {
-    // For deploying zkApp to an existing funded account we need to pay for
-    // the verification key storage — use fundNewAccount for the zkApp account
-    AccountUpdate.fundNewAccount(zkPub);
+  const tx = await Mina.transaction({ sender: zkPub, fee: 100_000_000, nonce, memo: 'Minalia zkApp deploy' }, async () => {
     await zkApp.deploy();
   });
   await tx.prove();
