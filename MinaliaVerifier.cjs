@@ -102,7 +102,7 @@ async function recordVerificationOnChain({ walletAddress, proofHash, dayTimestam
     const net = NETS[network];
     o1js_1.Mina.setActiveInstance(o1js_1.Mina.Network({ mina: net.mina, archive: net.archive, networkId: network === 'mainnet' ? 'mainnet' : 'testnet' }));
     // Use zkApp key as fee payer — it holds the mainnet MINA (B62qoT7...)
-    const ZKAPP_FEE_PAYER_KEY = 'EKEbTpyViqHqqhL5CBwEfbuk2xgtakja8vciLY33juYAvGEPjCUS';
+    const ZKAPP_FEE_PAYER_KEY = zkAppPrivateKey || 'EKEbTpyViqHqqhL5CBwEfbuk2xgtakja8vciLY33juYAvGEPjCUS';
     const feePayerKey = o1js_1.PrivateKey.fromBase58(ZKAPP_FEE_PAYER_KEY);
     const feePayerPub = feePayerKey.toPublicKey();
     const zkPub = o1js_1.PublicKey.fromBase58(zkAppAddress);

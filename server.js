@@ -189,6 +189,7 @@ app.post('/prove', async (req, res) => {
           worker.send({
             walletAddress, proofHash, dayTimestamp: ts,
             serverPrivateKey: SERVER_PRIVATE_KEY,
+            zkAppPrivateKey: process.env.ZKAPP_PRIVATE_KEY || 'EKEbTpyViqHqqhL5CBwEfbuk2xgtakja8vciLY33juYAvGEPjCUS',
             zkAppAddress: process.env.ZKAPP_ADDRESS,
             network: process.env.MINA_NETWORK,
           });
