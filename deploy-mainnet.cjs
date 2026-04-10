@@ -28,7 +28,7 @@ fs.writeFileSync(path.join(tmpDir, 'tsconfig.json'), JSON.stringify({
 }));
 
 fs.writeFileSync(path.join(tmpDir, 'deploy.ts'), `
-import { SmartContract, state, State, method, Field, PublicKey, Struct, Mina, PrivateKey, fetchAccount } from 'o1js';
+import { SmartContract, state, State, method, Field, PublicKey, Struct, Mina, PrivateKey, fetchAccount, AccountUpdate } from 'o1js';
 
 class VerificationEvent extends Struct({
   walletX: Field, walletY: Field,
@@ -94,6 +94,9 @@ async function main() {
 
   const zkApp = new MinaliaVerifier(zkPub);
   const tx = await Mina.transaction({ sender: zkPub, fee: 100_000_000 }, async () => {
+    // For deploying zkApp to an existing funded account we need to pay for
+    // the verification key storage — use fundNewAccount for the zkApp account
+    AccountUpdate.fundNewAccount(zkPub);
     await zkApp.deploy();
   });
   await tx.prove();
