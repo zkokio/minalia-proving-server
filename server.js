@@ -1,4 +1,8 @@
 import express from 'express';
+import { fork } from 'child_process';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+const __dirname = dirname(fileURLToPath(import.meta.url));
 import cors from 'cors';
 import { ZkProgram, PublicKey, PrivateKey, Signature, Field, Struct } from 'o1js';
 import Client from 'mina-signer';
@@ -174,37 +178,100 @@ app.post('/prove', async (req, res) => {
       });
     }
 
-    if (false) {
+    // On-chain recording via child process (isolated Snarky WASM instance)
+    if (process.env.ZKAPP_ADDRESS && process.env.MINA_NETWORK) {
       const proofHash = createHash('sha256')
         .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
         .digest('hex');
-      setImmediate(async () => {
+      setImmediate(() => {
         try {
-          const { recordVerificationOnChain } = await import('./MinaliaVerifier.cjs');
-          const result = await recordVerificationOnChain({
+          const worker = fork(join(__dirname, 'onchain-worker.cjs'));
+          worker.send({
             walletAddress, proofHash, dayTimestamp: ts,
             serverPrivateKey: SERVER_PRIVATE_KEY,
             zkAppAddress: process.env.ZKAPP_ADDRESS,
-            network: process.env.MINA_NETWORK || 'devnet',
+            network: process.env.MINA_NETWORK,
           });
-          console.log('On-chain tx:', result.txHash);
-          // Update DB
-          const url = process.env.SUPABASE_URL;
-          const key = process.env.SUPABASE_SERVICE_KEY;
-          if (url && key) {
-            await fetch(url + '/rest/v1/users?mina_wallet_address=eq.' + walletAddress, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json', 'apikey': key, 'Authorization': 'Bearer ' + key },
-              body: JSON.stringify({ zk_onchain_tx: result.txHash }),
-            });
-          }
-        } catch(e) { console.error('On-chain failed (non-fatal):', e.message); }
+          worker.on('message', async (msg) => {
+            if (msg.ok) {
+              console.log('On-chain tx:', msg.result.txHash);
+              console.log('Explorer:', msg.result.explorerUrl);
+              const url = process.env.SUPABASE_URL;
+              const key = process.env.SUPABASE_SERVICE_KEY;
+              if (url && key) {
+                await fetch(url + '/rest/v1/users?mina_wallet_address=eq.' + walletAddress, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json', 'apikey': key, 'Authorization': 'Bearer ' + key },
+                  body: JSON.stringify({ zk_onchain_tx: msg.result.txHash }),
+                });
+                console.log('On-chain tx saved to DB.');
+              }
+            } else {
+              console.error('On-chain failed (non-fatal):', msg.error);
+            }
+          });
+          worker.on('error', (e) => console.error('Worker error:', e.message));
+        } catch(e) { console.error('Failed to spawn worker:', e.message); }
       });
     }
 
   } catch (err) {
     console.error('Prove error:', err.message);
     if (!res.headersSent) res.status(500).json({ error: err.message });
+  }
+});
+
+// ── One-time mainnet deploy endpoint ──
+app.post('/deploy-mainnet', async (req, res) => {
+  const { secret } = req.body;
+  if (secret !== process.env.DEPLOY_SECRET) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  try {
+    const { createRequire } = await import('module');
+    const require = createRequire(import.meta.url);
+    const { MinaliaVerifier } = require('./MinaliaVerifier.cjs');
+    const { Mina, PrivateKey, PublicKey, AccountUpdate, fetchAccount } = await import('o1js');
+
+    const ZKAPP_PRIVATE_KEY  = 'EKEbTpyViqHqqhL5CBwEfbuk2xgtakja8vciLY33juYAvGEPjCUS';
+    const network = Mina.Network({
+      mina:    'https://api.minascan.io/node/mainnet/v1/graphql',
+      archive: 'https://api.minascan.io/archive/mainnet/v1/graphql',
+    });
+    Mina.setActiveInstance(network);
+
+    const zkAppKey  = PrivateKey.fromBase58(ZKAPP_PRIVATE_KEY);
+    const zkAppPub  = zkAppKey.toPublicKey();
+    const serverKey = PrivateKey.fromBase58(SERVER_PRIVATE_KEY);
+    const serverPub = serverKey.toPublicKey();
+
+    console.log('Deploy request — zkApp:', zkAppPub.toBase58());
+    console.log('Fee payer:', serverPub.toBase58());
+
+    // Check if already deployed
+    const zkAcc = await fetchAccount({ publicKey: zkAppPub });
+    if (zkAcc.account?.zkapp) {
+      return res.json({ ok: true, message: 'Already deployed on mainnet', address: zkAppPub.toBase58() });
+    }
+
+    console.log('Compiling MinaliaVerifier for deploy...');
+    await MinaliaVerifier.compile();
+    console.log('Compiled — deploying...');
+
+    const tx = await Mina.transaction({ sender: serverPub, fee: 100_000_000 }, async () => {
+      AccountUpdate.fundNewAccount(serverPub);
+      const zkApp = new MinaliaVerifier(zkAppPub);
+      await zkApp.deploy();
+    });
+    await tx.prove();
+    tx.sign([serverKey, zkAppKey]);
+    const sent = await tx.send();
+
+    console.log('Deploy tx:', sent.hash);
+    res.json({ ok: true, txHash: sent.hash, explorerUrl: 'https://minascan.io/mainnet/tx/' + sent.hash });
+  } catch(e) {
+    console.error('Deploy error:', e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
