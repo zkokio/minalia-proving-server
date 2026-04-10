@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 import cors from 'cors';
-import { ZkProgram, PublicKey, PrivateKey, Signature, Field, Struct } from 'o1js';
+import { ZkProgram, PublicKey, PrivateKey, Signature, Field, Struct, Mina, AccountUpdate, fetchAccount } from 'o1js';
 import Client from 'mina-signer';
 import { createHash } from 'crypto';
 
@@ -231,7 +231,7 @@ app.post('/deploy-mainnet', async (req, res) => {
     const { createRequire } = await import('module');
     const require = createRequire(import.meta.url);
     const { MinaliaVerifier } = require('./MinaliaVerifier.cjs');
-    const { Mina, PrivateKey, PublicKey, AccountUpdate, fetchAccount } = await import('o1js');
+    // o1js imported at top level
 
     const ZKAPP_PRIVATE_KEY  = 'EKEbTpyViqHqqhL5CBwEfbuk2xgtakja8vciLY33juYAvGEPjCUS';
     const network = Mina.Network({
