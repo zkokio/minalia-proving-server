@@ -125,14 +125,40 @@ async function ensureCompiled() {
 ensureCompiled().catch(err => console.error('Compile error:', err));
 
 // ── Health ──
+// Exposes everything a third-party auditor needs to independently verify
+// the running server is the code they expect:
+//   - commitSha: the git commit SHA of the deployed code (Railway sets
+//     RAILWAY_GIT_COMMIT_SHA automatically at build time)
+//   - sourceUrl: direct link to the specific commit on GitHub
+//   - vkHash: the verification key hash computed at compile time
+//   - expectedVkHash: the VK hash we EXPECT from this source code
+//   - vkMatches: true iff the two match (i.e. server built deterministically)
+// Anyone can:
+//   1. curl https://web-production-c35bd.up.railway.app/health
+//   2. Clone the repo at the reported commitSha
+//   3. Compile locally with o1js@2.14.0
+//   4. Confirm their local VK hash matches the server's vkHash
+//   5. Confirm the vkHash in any proof.json also matches
+// Three independent confirmations of circuit identity.
+const GIT_COMMIT_SHA =
+  process.env.RAILWAY_GIT_COMMIT_SHA ||   // Railway sets this automatically
+  process.env.GIT_COMMIT_SHA ||           // Generic fallback
+  null;
+const GIT_REPO_URL = 'https://github.com/zkokio/minalia-proving-server';
+
 app.get('/health', (req, res) => {
   res.json({
-    ok:           true,
+    ok:              true,
     compiled,
-    serverPubKey: SERVER_PUBLIC_KEY,
-    zkAppAddress: process.env.ZKAPP_ADDRESS || null,
-    vkHash:       VK_HASH,                  // null until compile finishes
-    vkMatches:    VK_HASH === EXPECTED_VK_HASH,
+    serverPubKey:    SERVER_PUBLIC_KEY,
+    zkAppAddress:    process.env.ZKAPP_ADDRESS || null,
+    vkHash:          VK_HASH,                  // null until compile finishes
+    expectedVkHash:  EXPECTED_VK_HASH,         // what the pinned source compiles to
+    vkMatches:       VK_HASH === EXPECTED_VK_HASH,
+    commitSha:       GIT_COMMIT_SHA,
+    sourceUrl:       GIT_COMMIT_SHA ? `${GIT_REPO_URL}/tree/${GIT_COMMIT_SHA}` : GIT_REPO_URL,
+    circuitFile:     `${GIT_REPO_URL}/blob/${GIT_COMMIT_SHA || 'main'}/server.js`,
+    o1jsVersion:     '2.14.0',
   });
 });
 
