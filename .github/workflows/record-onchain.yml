@@ -1,5 +1,4 @@
 name: Record Verification On-Chain
-
 on:
   workflow_dispatch:
     inputs:
@@ -7,7 +6,6 @@ on:
         description: 'Player wallet address (B62q...)'
         required: true
         type: string
-
 jobs:
   record:
     runs-on: ubuntu-latest
@@ -22,5 +20,7 @@ jobs:
         run: node record-onchain.cjs "${{ github.event.inputs.wallet_address }}"
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ZKAPP_PRIVATE_KEY:    ${{ secrets.ZKAPP_PRIVATE_KEY }}
+          ZKAPP_ADDRESS:        ${{ secrets.ZKAPP_ADDRESS }}
