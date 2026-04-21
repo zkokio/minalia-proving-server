@@ -4,14 +4,16 @@
 // Fetches proof hash from Supabase, records it on Mina mainnet
 //
 // REQUIRES these env vars (set via GitHub Actions secrets):
-//   SUPABASE_URL          - Supabase project URL
-//   SUPABASE_SERVICE_KEY  - Supabase service role key (for DB updates)
-//   ZKAPP_PRIVATE_KEY     - zkApp fee-payer private key (EK... format)
-//   ZKAPP_ADDRESS         - zkApp account address (B62q... format)
+//   SUPABASE_URL            - Supabase project URL
+//   SUPABASE_SERVICE_KEY    - Supabase service role key (for DB updates)
+//   FEE_PAYER_PRIVATE_KEY   - Private key that pays the transaction fee (EK...)
+//   FEE_PAYER_ADDRESS       - Public address for the above (B62q...)
+//   ZKAPP_ADDRESS           - zkApp account address where MinaliaVerifier lives
 //
-// Refuses to start if any required env var is missing, and refuses to run if
-// ZKAPP_PRIVATE_KEY and ZKAPP_ADDRESS don't form a matching pair. This prevents
-// the "one secret updated, the other forgotten" failure mode.
+// Fee payer is a separate regular account from the zkApp itself. This is because
+// the zkApp account has `send` permission locked to Proof-only after deployment,
+// so it can't pay transaction fees via signature. A regular account signing
+// fees is the standard zkApp pattern.
 
 const { execSync, execFileSync } = require('child_process');
 const path = require('path');
@@ -21,31 +23,25 @@ const walletAddress = process.argv[2];
 if (!walletAddress) { console.error('Usage: node record-onchain.cjs <walletAddress>'); process.exit(1); }
 
 // ── Required env vars ──
-const SUPABASE_URL       = process.env.SUPABASE_URL;
-const SUPABASE_KEY       = process.env.SUPABASE_SERVICE_KEY;
-const ZKAPP_PRIVATE_KEY  = process.env.ZKAPP_PRIVATE_KEY;
-const ZKAPP_ADDRESS      = process.env.ZKAPP_ADDRESS;
+const SUPABASE_URL          = process.env.SUPABASE_URL;
+const SUPABASE_KEY          = process.env.SUPABASE_SERVICE_KEY;
+const FEE_PAYER_PRIVATE_KEY = process.env.FEE_PAYER_PRIVATE_KEY;
+const FEE_PAYER_ADDRESS     = process.env.FEE_PAYER_ADDRESS;
+const ZKAPP_ADDRESS         = process.env.ZKAPP_ADDRESS;
 
 function requireEnv(name, value) {
   if (!value) {
     console.error('FATAL: ' + name + ' env var is not set.');
-    console.error('Set it in the repository GitHub Actions secrets and ensure');
-    console.error('record-onchain.yml passes it through in the env: block.');
+    console.error('Set it as a GitHub Actions secret and pass it through in');
+    console.error('record-onchain.yml env: block.');
     process.exit(1);
   }
 }
-requireEnv('SUPABASE_URL',         SUPABASE_URL);
-requireEnv('SUPABASE_SERVICE_KEY', SUPABASE_KEY);
-requireEnv('ZKAPP_PRIVATE_KEY',    ZKAPP_PRIVATE_KEY);
-requireEnv('ZKAPP_ADDRESS',        ZKAPP_ADDRESS);
-
-// Sanity check: confirm the zkApp private key actually produces the configured
-// zkApp address. Defers the actual derivation to a small child process because
-// o1js is a heavy dep and this file runs before the tmpDir install.
-//
-// We do this via the generated TS below. If the keys mismatch, Mina.transaction
-// will fail with a clear error when signing. So we rely on that failure mode
-// rather than loading o1js twice here.
+requireEnv('SUPABASE_URL',          SUPABASE_URL);
+requireEnv('SUPABASE_SERVICE_KEY',  SUPABASE_KEY);
+requireEnv('FEE_PAYER_PRIVATE_KEY', FEE_PAYER_PRIVATE_KEY);
+requireEnv('FEE_PAYER_ADDRESS',     FEE_PAYER_ADDRESS);
+requireEnv('ZKAPP_ADDRESS',         ZKAPP_ADDRESS);
 
 async function fetchProofData() {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/users?mina_wallet_address=eq.${walletAddress}&select=zk_proof_hash,zk_onchain_tx,zk_verified_at`, {
@@ -94,10 +90,7 @@ async function saveOnChainTx(txHash) {
   const proofHash = user.zk_proof_hash;
   const dayTimestamp = Math.floor(new Date(user.zk_verified_at).getTime() / 86400000);
 
-  // NOTE: ZKAPP_PRIVATE_KEY and ZKAPP_ADDRESS are read from env inside the
-  // generated TS rather than inlined, so the compiled JS file never contains
-  // the private key. If this script leaves its tmp-record directory behind
-  // (e.g. on failure), the private key is NOT in any file on disk.
+  // Keys read from env inside child — NEVER inlined into the generated TS.
   fs.writeFileSync(path.join(tmpDir, 'record.ts'), `
 import { SmartContract, state, State, method, Field, PublicKey, Struct, Mina, PrivateKey, fetchAccount } from 'o1js';
 
@@ -140,11 +133,11 @@ class MinaliaVerifier extends SmartContract {
 }
 
 async function main() {
-  // Read from env — NEVER from hardcoded strings.
-  const ZKAPP_PRIV = process.env.ZKAPP_PRIVATE_KEY;
-  const ZKAPP_ADDR = process.env.ZKAPP_ADDRESS;
-  if (!ZKAPP_PRIV || !ZKAPP_ADDR) {
-    console.error('FATAL: ZKAPP_PRIVATE_KEY or ZKAPP_ADDRESS missing in child process env.');
+  const FEE_PAYER_PRIV = process.env.FEE_PAYER_PRIVATE_KEY;
+  const FEE_PAYER_ADDR = process.env.FEE_PAYER_ADDRESS;
+  const ZKAPP_ADDR     = process.env.ZKAPP_ADDRESS;
+  if (!FEE_PAYER_PRIV || !FEE_PAYER_ADDR || !ZKAPP_ADDR) {
+    console.error('FATAL: env vars missing in child process.');
     process.exit(1);
   }
 
@@ -154,28 +147,42 @@ async function main() {
     networkId: 'mainnet',
   }));
 
-  const feePayerKey = PrivateKey.fromBase58(ZKAPP_PRIV);
+  const feePayerKey = PrivateKey.fromBase58(FEE_PAYER_PRIV);
   const feePayerPub = feePayerKey.toPublicKey();
   const zkPub       = PublicKey.fromBase58(ZKAPP_ADDR);
   const walletPub   = PublicKey.fromBase58('${walletAddress}');
 
-  // Key-pair sanity check: derived address must match configured address.
+  // Fee-payer key-pair sanity check
   const derived = feePayerPub.toBase58();
-  if (derived !== ZKAPP_ADDR) {
-    console.error('FATAL: ZKAPP_ADDRESS does not match ZKAPP_PRIVATE_KEY.');
-    console.error('  Configured:', ZKAPP_ADDR);
+  if (derived !== FEE_PAYER_ADDR) {
+    console.error('FATAL: FEE_PAYER_ADDRESS does not match FEE_PAYER_PRIVATE_KEY.');
+    console.error('  Configured:', FEE_PAYER_ADDR);
     console.error('  Derived   :', derived);
-    console.error('Update the mismatched secret in GitHub Actions and retry.');
     process.exit(1);
   }
-  console.log('zkApp key pair verified. Fee payer:', derived);
+  console.log('Fee payer key pair verified. Address:', derived);
 
-  const { account } = await fetchAccount({ publicKey: feePayerPub });
-  console.log('Balance:', account ? Number(account.balance.toBigInt()) / 1e9 + ' MINA' : 'NOT FOUND');
-  if (!account) { console.error('Fee payer not found on mainnet'); process.exit(1); }
+  // Confirm fee payer exists and has funds
+  const { account: fpAccount } = await fetchAccount({ publicKey: feePayerPub });
+  if (!fpAccount) { console.error('Fee payer not found on mainnet.'); process.exit(1); }
+  const balanceMina = Number(fpAccount.balance.toBigInt()) / 1e9;
+  console.log('Fee payer balance:', balanceMina, 'MINA');
+  if (balanceMina < 0.05) {
+    console.error('FATAL: Fee payer balance too low to cover 0.01 MINA tx fee.');
+    process.exit(1);
+  }
 
-  await fetchAccount({ publicKey: zkPub });
+  // Confirm zkApp exists and has the contract deployed
+  const { account: zkAccount } = await fetchAccount({ publicKey: zkPub });
+  if (!zkAccount) { console.error('zkApp not found on mainnet.'); process.exit(1); }
+  if (!zkAccount.zkapp) {
+    console.error('FATAL: Account exists at zkApp address but no contract is deployed there.');
+    console.error('Run the deploy-mainnet workflow first.');
+    process.exit(1);
+  }
+  console.log('zkApp contract found at:', zkPub.toBase58());
 
+  // Split 64-char hex proof hash into two Field values (128 bits each)
   const hashBig = BigInt('0x' + '${proofHash}'.padStart(64, '0'));
   const LOW_MASK = (1n << 128n) - 1n;
   const proofHashLow  = Field(hashBig & LOW_MASK);
@@ -183,14 +190,24 @@ async function main() {
 
   console.log('Compiling MinaliaVerifier...');
   await MinaliaVerifier.compile();
-  console.log('Compiled. Recording...');
+  console.log('Compiled. Building transaction...');
 
   const zkApp = new MinaliaVerifier(zkPub);
-  const tx = await Mina.transaction({ sender: feePayerPub, fee: 10_000_000, memo: 'Minalia verify' }, async () => {
-    await zkApp.recordVerification(walletPub, proofHashLow, proofHashHigh, Field(${dayTimestamp}));
-  });
+
+  // Fee payer is sender; zkApp method runs as part of the transaction.
+  // Only the fee payer needs to sign — the zkApp method is authorised via proof.
+  const tx = await Mina.transaction(
+    { sender: feePayerPub, fee: 10_000_000, memo: 'Minalia verify' },
+    async () => {
+      await zkApp.recordVerification(walletPub, proofHashLow, proofHashHigh, Field(${dayTimestamp}));
+    }
+  );
+
+  console.log('Proving transaction...');
   await tx.prove();
   tx.sign([feePayerKey]);
+
+  console.log('Sending to mainnet...');
   const sent = await tx.send();
 
   console.log('\\n✅ RECORDED ON-CHAIN!');
@@ -207,14 +224,13 @@ main().catch(e => { console.error('Failed:', e.message); process.exit(1); });
   execSync('npx tsc', { cwd: tmpDir, stdio: 'inherit' });
   console.log('Running...');
 
-  // Capture output to get tx hash. Explicitly forward ZKAPP_* env vars so the
-  // child process can read them. process.env already includes them but being
-  // explicit here documents the contract.
+  // Forward required env vars to child process.
   const output = execFileSync('node', ['dist/record.js'], {
     cwd: tmpDir, encoding: 'utf8',
     env: {
       ...process.env,
-      ZKAPP_PRIVATE_KEY,
+      FEE_PAYER_PRIVATE_KEY,
+      FEE_PAYER_ADDRESS,
       ZKAPP_ADDRESS,
     }
   });
