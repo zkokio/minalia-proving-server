@@ -1,4 +1,15 @@
 name: Record Verification On-Chain
+
+# Triggered automatically by zk-attest after every verification.
+# Records the proof hash on Mina mainnet using the MinaliaVerifier SmartContract.
+#
+# Requires GitHub Actions secrets:
+#   SUPABASE_URL            - Supabase project URL
+#   SUPABASE_SERVICE_KEY    - Supabase service role key
+#   FEE_PAYER_PRIVATE_KEY   - Fee payer private key (separate regular account)
+#   FEE_PAYER_ADDRESS       - Fee payer public address (must match private key)
+#   ZKAPP_ADDRESS           - Address of deployed MinaliaVerifier contract
+
 on:
   workflow_dispatch:
     inputs:
@@ -6,6 +17,7 @@ on:
         description: 'Player wallet address (B62q...)'
         required: true
         type: string
+
 jobs:
   record:
     runs-on: ubuntu-latest
@@ -20,7 +32,8 @@ jobs:
         run: node record-onchain.cjs "${{ github.event.inputs.wallet_address }}"
         env:
           NODE_OPTIONS: '--max-old-space-size=4096'
-          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          ZKAPP_PRIVATE_KEY:    ${{ secrets.ZKAPP_PRIVATE_KEY }}
-          ZKAPP_ADDRESS:        ${{ secrets.ZKAPP_ADDRESS }}
+          SUPABASE_URL:          ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:  ${{ secrets.SUPABASE_SERVICE_KEY }}
+          FEE_PAYER_PRIVATE_KEY: ${{ secrets.FEE_PAYER_PRIVATE_KEY }}
+          FEE_PAYER_ADDRESS:     ${{ secrets.FEE_PAYER_ADDRESS }}
+          ZKAPP_ADDRESS:         ${{ secrets.ZKAPP_ADDRESS }}
