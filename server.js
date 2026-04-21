@@ -11,8 +11,40 @@ import { createHash } from 'crypto';
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
-const SERVER_PRIVATE_KEY = process.env.SERVER_PRIVATE_KEY || 'EKDxrPaymujx8HjZJ5iWLLQ4nCyyGa5HieoTEwdcX6T1GvPJgvv4';
-const SERVER_PUBLIC_KEY  = 'B62qoq6kq5R4RocoQspdNt948wZEpMWy16EC1HzdWhhuiVpQ8CKxmEr';
+const SERVER_PRIVATE_KEY = process.env.SERVER_PRIVATE_KEY;
+const SERVER_PUBLIC_KEY  = process.env.SERVER_PUBLIC_KEY;
+
+if (!SERVER_PRIVATE_KEY) {
+  console.error('FATAL: SERVER_PRIVATE_KEY env var is not set.');
+  console.error('Set it in Railway Variables. Refusing to start without it — the');
+  console.error('attesting server key is what signs verifications and must never be');
+  console.error('hardcoded in source. See README for rotation instructions.');
+  process.exit(1);
+}
+if (!SERVER_PUBLIC_KEY) {
+  console.error('FATAL: SERVER_PUBLIC_KEY env var is not set.');
+  console.error('Set it in Railway Variables to the B62q... address that matches');
+  console.error('SERVER_PRIVATE_KEY. Refusing to start without it.');
+  process.exit(1);
+}
+
+// Sanity check: confirm the private key actually produces the configured public key.
+// Catches the "one env var updated, the other forgotten" failure mode where the
+// server would otherwise happily sign attestations with the wrong key pair.
+try {
+  const derived = PrivateKey.fromBase58(SERVER_PRIVATE_KEY).toPublicKey().toBase58();
+  if (derived !== SERVER_PUBLIC_KEY) {
+    console.error('FATAL: SERVER_PUBLIC_KEY does not match SERVER_PRIVATE_KEY.');
+    console.error('  Configured public key:', SERVER_PUBLIC_KEY);
+    console.error('  Derived from private :', derived);
+    console.error('One of the two env vars is stale. Update Railway and redeploy.');
+    process.exit(1);
+  }
+  console.log('Server key pair verified. Public key:', SERVER_PUBLIC_KEY);
+} catch (e) {
+  console.error('FATAL: SERVER_PRIVATE_KEY is not a valid Mina private key:', e.message);
+  process.exit(1);
+}
 
 // The verification key hash for the currently-deployed circuit. After compile()
 // runs we sanity-check that the live hash matches this constant. If the circuit
