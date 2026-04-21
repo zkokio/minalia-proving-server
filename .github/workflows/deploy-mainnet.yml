@@ -1,0 +1,33 @@
+name: Deploy MinaliaVerifier to Mainnet
+
+# One-shot workflow: run manually to install the MinaliaVerifier SmartContract
+# at the zkApp address. Safe to re-run — the script detects if the contract
+# is already deployed and exits cleanly without spending MINA.
+#
+# Requires GitHub Actions secrets:
+#   ZKAPP_PRIVATE_KEY - zkApp account private key
+#   ZKAPP_ADDRESS     - zkApp account public address (must match the private key)
+#
+# After a successful run, the Record Verification On-Chain workflow (triggered
+# automatically by zk-attest on every new verification) will be able to call
+# recordVerification on the contract.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm install
+      - name: Deploy MinaliaVerifier to mainnet
+        run: node deploy-mainnet.cjs
+        env:
+          NODE_OPTIONS: '--max-old-space-size=4096'
+          ZKAPP_PRIVATE_KEY: ${{ secrets.ZKAPP_PRIVATE_KEY }}
+          ZKAPP_ADDRESS:     ${{ secrets.ZKAPP_ADDRESS }}
