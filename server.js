@@ -14,11 +14,23 @@ const PORT = process.env.PORT || 3000;
 const SERVER_PRIVATE_KEY = process.env.SERVER_PRIVATE_KEY || 'EKDxrPaymujx8HjZJ5iWLLQ4nCyyGa5HieoTEwdcX6T1GvPJgvv4';
 const SERVER_PUBLIC_KEY  = 'B62qoq6kq5R4RocoQspdNt948wZEpMWy16EC1HzdWhhuiVpQ8CKxmEr';
 
-// The verification key hash that's been used since launch. After compile() runs we
-// sanity-check that the live hash matches this constant. If the circuit ever changes
-// (intentionally or by accident), the mismatch is logged loudly so the issue can't
-// silently break verification for existing users.
-const EXPECTED_VK_HASH = '9593722557951211419106663534603742997598351560074849689831849095336735130217';
+// The verification key hash for the currently-deployed circuit. After compile()
+// runs we sanity-check that the live hash matches this constant. If the circuit
+// ever changes (intentionally or by accident — e.g. unpinned o1js version drift),
+// the mismatch is logged loudly so the issue can't silently break verification.
+//
+// IMPORTANT: This hash is tied to BOTH the circuit source AND the o1js version.
+// Bumping o1js (even a patch) can change this hash because Pickles internals
+// shift between versions. Always pin o1js to an EXACT version in package.json
+// (no caret, no tilde) and commit package-lock.json so deploys can't drift.
+//
+// If you intentionally bump o1js or change the circuit:
+//   1. Deploy and read the new hash from Railway logs / /health endpoint
+//   2. Update this constant
+//   3. Update VERIFICATION_KEY_HASH in supabase/functions/zk-attest/index.ts
+//   4. Update VK_HASH in verify.html (audit-the-circuit instructions)
+//   5. Existing user proofs will not verify against the new VK — wipe and re-verify
+const EXPECTED_VK_HASH = '21428822038759506179445837352223957273759843165645580082852926175852620820809';
 
 const minaClient = new Client({ network: 'mainnet' });
 
@@ -73,7 +85,7 @@ async function ensureCompiled() {
         console.error('  Got:     ', VK_HASH);
         console.error('  Existing user proofs will no longer verify against this VK.');
         console.error('  If this change is intentional, update EXPECTED_VK_HASH and the');
-        console.error('  matching constant in zk-attest edge function (Supabase).');
+        console.error('  matching constants in zk-attest edge function and verify.html.');
       }
     });
   return compilePromise;
@@ -168,7 +180,7 @@ app.post('/prove', async (req, res) => {
           const ipfsDoc = {
             protocol:            'Mina Protocol / o1js MinalianVerification ZkProgram',
             verificationKeyHash: vkHashSnapshot || EXPECTED_VK_HASH,
-            verificationKey:     vkBase64Snapshot,   // NEW — full base64 VK
+            verificationKey:     vkBase64Snapshot,
             serverPublicKey:     SERVER_PUBLIC_KEY,
             walletAddress:       walletAddr,
             dayTimestamp:        day,
