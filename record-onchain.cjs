@@ -2,6 +2,16 @@
 // On-chain verification recorder
 // Usage: node record-onchain.cjs <walletAddress>
 // Fetches proof hash from Supabase, records it on Mina mainnet
+//
+// REQUIRES these env vars (set via GitHub Actions secrets):
+//   SUPABASE_URL          - Supabase project URL
+//   SUPABASE_SERVICE_KEY  - Supabase service role key (for DB updates)
+//   ZKAPP_PRIVATE_KEY     - zkApp fee-payer private key (EK... format)
+//   ZKAPP_ADDRESS         - zkApp account address (B62q... format)
+//
+// Refuses to start if any required env var is missing, and refuses to run if
+// ZKAPP_PRIVATE_KEY and ZKAPP_ADDRESS don't form a matching pair. This prevents
+// the "one secret updated, the other forgotten" failure mode.
 
 const { execSync, execFileSync } = require('child_process');
 const path = require('path');
@@ -10,10 +20,32 @@ const fs = require('fs');
 const walletAddress = process.argv[2];
 if (!walletAddress) { console.error('Usage: node record-onchain.cjs <walletAddress>'); process.exit(1); }
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://vvlgaisfhhjvchequmhh.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const ZKAPP_PRIVATE_KEY  = 'EKEbTpyViqHqqhL5CBwEfbuk2xgtakja8vciLY33juYAvGEPjCUS';
-const ZKAPP_ADDRESS      = 'B62qrmr7hZjMkAdfcSXr1A1bYTn1vQEvGFVYe5yKitPmtWE5RNjHEtf';
+// ── Required env vars ──
+const SUPABASE_URL       = process.env.SUPABASE_URL;
+const SUPABASE_KEY       = process.env.SUPABASE_SERVICE_KEY;
+const ZKAPP_PRIVATE_KEY  = process.env.ZKAPP_PRIVATE_KEY;
+const ZKAPP_ADDRESS      = process.env.ZKAPP_ADDRESS;
+
+function requireEnv(name, value) {
+  if (!value) {
+    console.error('FATAL: ' + name + ' env var is not set.');
+    console.error('Set it in the repository GitHub Actions secrets and ensure');
+    console.error('record-onchain.yml passes it through in the env: block.');
+    process.exit(1);
+  }
+}
+requireEnv('SUPABASE_URL',         SUPABASE_URL);
+requireEnv('SUPABASE_SERVICE_KEY', SUPABASE_KEY);
+requireEnv('ZKAPP_PRIVATE_KEY',    ZKAPP_PRIVATE_KEY);
+requireEnv('ZKAPP_ADDRESS',        ZKAPP_ADDRESS);
+
+// Sanity check: confirm the zkApp private key actually produces the configured
+// zkApp address. Defers the actual derivation to a small child process because
+// o1js is a heavy dep and this file runs before the tmpDir install.
+//
+// We do this via the generated TS below. If the keys mismatch, Mina.transaction
+// will fail with a clear error when signing. So we rely on that failure mode
+// rather than loading o1js twice here.
 
 async function fetchProofData() {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/users?mina_wallet_address=eq.${walletAddress}&select=zk_proof_hash,zk_onchain_tx,zk_verified_at`, {
@@ -47,7 +79,7 @@ async function saveOnChainTx(txHash) {
 
   fs.writeFileSync(path.join(tmpDir, 'package.json'), JSON.stringify({
     name: 'tmp-record', type: 'module',
-    dependencies: { o1js: '^2.1.0' },
+    dependencies: { o1js: '2.14.0' },
     devDependencies: { '@types/node': '^20.0.0', typescript: '^5.0.0' }
   }));
   fs.writeFileSync(path.join(tmpDir, 'tsconfig.json'), JSON.stringify({
@@ -62,6 +94,10 @@ async function saveOnChainTx(txHash) {
   const proofHash = user.zk_proof_hash;
   const dayTimestamp = Math.floor(new Date(user.zk_verified_at).getTime() / 86400000);
 
+  // NOTE: ZKAPP_PRIVATE_KEY and ZKAPP_ADDRESS are read from env inside the
+  // generated TS rather than inlined, so the compiled JS file never contains
+  // the private key. If this script leaves its tmp-record directory behind
+  // (e.g. on failure), the private key is NOT in any file on disk.
   fs.writeFileSync(path.join(tmpDir, 'record.ts'), `
 import { SmartContract, state, State, method, Field, PublicKey, Struct, Mina, PrivateKey, fetchAccount } from 'o1js';
 
@@ -104,18 +140,36 @@ class MinaliaVerifier extends SmartContract {
 }
 
 async function main() {
+  // Read from env — NEVER from hardcoded strings.
+  const ZKAPP_PRIV = process.env.ZKAPP_PRIVATE_KEY;
+  const ZKAPP_ADDR = process.env.ZKAPP_ADDRESS;
+  if (!ZKAPP_PRIV || !ZKAPP_ADDR) {
+    console.error('FATAL: ZKAPP_PRIVATE_KEY or ZKAPP_ADDRESS missing in child process env.');
+    process.exit(1);
+  }
+
   Mina.setActiveInstance(Mina.Network({
     mina:    'https://api.minascan.io/node/mainnet/v1/graphql',
     archive: 'https://api.minascan.io/archive/mainnet/v1/graphql',
     networkId: 'mainnet',
   }));
 
-  const feePayerKey = PrivateKey.fromBase58('${ZKAPP_PRIVATE_KEY}');
+  const feePayerKey = PrivateKey.fromBase58(ZKAPP_PRIV);
   const feePayerPub = feePayerKey.toPublicKey();
-  const zkPub       = PublicKey.fromBase58('${ZKAPP_ADDRESS}');
+  const zkPub       = PublicKey.fromBase58(ZKAPP_ADDR);
   const walletPub   = PublicKey.fromBase58('${walletAddress}');
 
-  console.log('Fee payer:', feePayerPub.toBase58());
+  // Key-pair sanity check: derived address must match configured address.
+  const derived = feePayerPub.toBase58();
+  if (derived !== ZKAPP_ADDR) {
+    console.error('FATAL: ZKAPP_ADDRESS does not match ZKAPP_PRIVATE_KEY.');
+    console.error('  Configured:', ZKAPP_ADDR);
+    console.error('  Derived   :', derived);
+    console.error('Update the mismatched secret in GitHub Actions and retry.');
+    process.exit(1);
+  }
+  console.log('zkApp key pair verified. Fee payer:', derived);
+
   const { account } = await fetchAccount({ publicKey: feePayerPub });
   console.log('Balance:', account ? Number(account.balance.toBigInt()) / 1e9 + ' MINA' : 'NOT FOUND');
   if (!account) { console.error('Fee payer not found on mainnet'); process.exit(1); }
@@ -153,10 +207,16 @@ main().catch(e => { console.error('Failed:', e.message); process.exit(1); });
   execSync('npx tsc', { cwd: tmpDir, stdio: 'inherit' });
   console.log('Running...');
 
-  // Capture output to get tx hash
+  // Capture output to get tx hash. Explicitly forward ZKAPP_* env vars so the
+  // child process can read them. process.env already includes them but being
+  // explicit here documents the contract.
   const output = execFileSync('node', ['dist/record.js'], {
     cwd: tmpDir, encoding: 'utf8',
-    env: { ...process.env }
+    env: {
+      ...process.env,
+      ZKAPP_PRIVATE_KEY,
+      ZKAPP_ADDRESS,
+    }
   });
   console.log(output);
 
