@@ -14,6 +14,12 @@ const PORT = process.env.PORT || 3000;
 const SERVER_PRIVATE_KEY = process.env.SERVER_PRIVATE_KEY || 'EKDxrPaymujx8HjZJ5iWLLQ4nCyyGa5HieoTEwdcX6T1GvPJgvv4';
 const SERVER_PUBLIC_KEY  = 'B62qoq6kq5R4RocoQspdNt948wZEpMWy16EC1HzdWhhuiVpQ8CKxmEr';
 
+// The verification key hash that's been used since launch. After compile() runs we
+// sanity-check that the live hash matches this constant. If the circuit ever changes
+// (intentionally or by accident), the mismatch is logged loudly so the issue can't
+// silently break verification for existing users.
+const EXPECTED_VK_HASH = '9593722557951211419106663534603742997598351560074849689831849095336735130217';
+
 const minaClient = new Client({ network: 'mainnet' });
 
 app.use(cors({ origin: ['https://play.minaliens.xyz', 'http://localhost', 'http://127.0.0.1'], credentials: false }));
@@ -44,22 +50,46 @@ const MinalianVerification = ZkProgram({
   }
 });
 
-// Compile ONCE at startup — never compile again
+// Compile ONCE at startup — never compile again.
+// After compile, cache the verification key so /prove and the IPFS upload can
+// expose it to end-users for trustless verification.
 let compiled = false;
 let compilePromise = null;
+let VK_BASE64 = null;
+let VK_HASH   = null;
 async function ensureCompiled() {
   if (compiled) return;
   if (compilePromise) return compilePromise;
   console.log('Compiling ZkProgram...');
   compilePromise = MinalianVerification.compile()
-    .then(() => { compiled = true; console.log('Compiled.'); });
+    .then(({ verificationKey }) => {
+      VK_BASE64 = verificationKey.data;
+      VK_HASH   = verificationKey.hash.toString();
+      compiled  = true;
+      console.log('Compiled. VK hash:', VK_HASH);
+      if (VK_HASH !== EXPECTED_VK_HASH) {
+        console.error('⚠ VK HASH MISMATCH — circuit has changed!');
+        console.error('  Expected:', EXPECTED_VK_HASH);
+        console.error('  Got:     ', VK_HASH);
+        console.error('  Existing user proofs will no longer verify against this VK.');
+        console.error('  If this change is intentional, update EXPECTED_VK_HASH and the');
+        console.error('  matching constant in zk-attest edge function (Supabase).');
+      }
+    });
   return compilePromise;
 }
 ensureCompiled().catch(err => console.error('Compile error:', err));
 
 // ── Health ──
 app.get('/health', (req, res) => {
-  res.json({ ok: true, compiled, serverPubKey: SERVER_PUBLIC_KEY, zkAppAddress: process.env.ZKAPP_ADDRESS || null });
+  res.json({
+    ok:           true,
+    compiled,
+    serverPubKey: SERVER_PUBLIC_KEY,
+    zkAppAddress: process.env.ZKAPP_ADDRESS || null,
+    vkHash:       VK_HASH,                  // null until compile finishes
+    vkMatches:    VK_HASH === EXPECTED_VK_HASH,
+  });
 });
 
 // ── Prove ──
@@ -101,8 +131,17 @@ app.post('/prove', async (req, res) => {
       maxProofsVerified: proof.maxProofsVerified, proof: proof.proof,
     };
 
-    // Respond immediately
-    res.json({ ok: true, zkProof: proofJson, zkPublicInput: { walletAddress, username, dayTimestamp: ts }, onChainTx: null });
+    // Respond immediately — include the full VK so the frontend can forward it to
+    // zk-attest and end-users get a self-contained proof.json from IPFS that they
+    // can verify in one command (no source-compile required).
+    res.json({
+      ok: true,
+      zkProof: proofJson,
+      zkPublicInput: { walletAddress, username, dayTimestamp: ts },
+      onChainTx: null,
+      verificationKey:     VK_BASE64,
+      verificationKeyHash: VK_HASH,
+    });
 
     // Upload proof to IPFS via Pinata (fire-and-forget)
     if (process.env.PINATA_JWT) {
@@ -113,15 +152,23 @@ app.post('/prove', async (req, res) => {
       const day         = ts;
       const proofData   = proofJson;
       const proofHash   = createHash('sha256')
-        .update(JSON.stringify(proofJson) + '9593722557951211419106663534603742997598351560074849689831849095336735130217')
+        .update(JSON.stringify(proofJson) + EXPECTED_VK_HASH)
         .digest('hex');
+
+      // Capture VK values for the closure so they can't be mutated mid-upload
+      const vkBase64Snapshot = VK_BASE64;
+      const vkHashSnapshot   = VK_HASH;
 
       setImmediate(async () => {
         try {
-          // Build the proof document
+          // Build the proof document. The full base64 verificationKey is included
+          // so anyone can run `o1js.verify(proof.zkProof.proof, proof.verificationKey)`
+          // without first compiling the circuit. The verificationKeyHash is also kept
+          // for verifiers who DO want to compile from source and confirm a match.
           const ipfsDoc = {
             protocol:            'Mina Protocol / o1js MinalianVerification ZkProgram',
-            verificationKeyHash: '9593722557951211419106663534603742997598351560074849689831849095336735130217',
+            verificationKeyHash: vkHashSnapshot || EXPECTED_VK_HASH,
+            verificationKey:     vkBase64Snapshot,   // NEW — full base64 VK
             serverPublicKey:     SERVER_PUBLIC_KEY,
             walletAddress:       walletAddr,
             dayTimestamp:        day,
